@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import hashlib
-import posixpath
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Optional
 from urllib.parse import SplitResult, urlsplit
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from .bots import classify_user_agent, os_family
 from .logformat import CompiledLogFormat
@@ -81,6 +81,7 @@ def parse_line(
     site_name: str,
     secret_key: str,
     country: Optional[str] = None,
+    timezone_name: str = "UTC",
 ) -> ParsedRequest:
     match = log_format.pattern.match(line.rstrip("\r\n"))
     if not match:
@@ -90,7 +91,11 @@ def parse_line(
         occurred = datetime.strptime(fields["time_local"], "%d/%b/%Y:%H:%M:%S %z")
     except (KeyError, ValueError) as exc:
         raise ParseError("Invalid access-log timestamp") from exc
-    day = occurred.astimezone(timezone.utc).date().isoformat()
+    try:
+        display_zone = ZoneInfo(timezone_name)
+    except ZoneInfoNotFoundError as exc:
+        raise ParseError(f"Unknown timezone: {timezone_name}") from exc
+    day = occurred.astimezone(display_zone).date().isoformat()
 
     request = fields.get("request", "")
     if request:
@@ -147,4 +152,3 @@ def _referrer_host(referrer: Optional[str], site_name: str) -> Optional[str]:
     if host.removeprefix("www.") == normalized_site:
         return None
     return host or None
-

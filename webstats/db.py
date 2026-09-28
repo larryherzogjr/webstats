@@ -63,6 +63,24 @@ CREATE TABLE IF NOT EXISTS daily_site (
     status_3xx INTEGER NOT NULL, status_4xx INTEGER NOT NULL,
     status_5xx INTEGER NOT NULL, PRIMARY KEY(site_id, day)
 );
+CREATE TABLE IF NOT EXISTS daily_traffic (
+    site_id INTEGER NOT NULL REFERENCES sites(id), day TEXT NOT NULL,
+    is_bot INTEGER NOT NULL, is_asset INTEGER NOT NULL,
+    requests INTEGER NOT NULL, unique_visitors INTEGER NOT NULL,
+    bytes INTEGER NOT NULL, status_2xx INTEGER NOT NULL,
+    status_3xx INTEGER NOT NULL, status_4xx INTEGER NOT NULL,
+    status_5xx INTEGER NOT NULL,
+    PRIMARY KEY(site_id, day, is_bot, is_asset)
+);
+CREATE TABLE IF NOT EXISTS daily_filter (
+    site_id INTEGER NOT NULL REFERENCES sites(id), day TEXT NOT NULL,
+    include_bots INTEGER NOT NULL, include_assets INTEGER NOT NULL,
+    requests INTEGER NOT NULL, unique_visitors INTEGER NOT NULL,
+    bytes INTEGER NOT NULL, status_2xx INTEGER NOT NULL,
+    status_3xx INTEGER NOT NULL, status_4xx INTEGER NOT NULL,
+    status_5xx INTEGER NOT NULL,
+    PRIMARY KEY(site_id, day, include_bots, include_assets)
+);
 CREATE TABLE IF NOT EXISTS daily_path (
     site_id INTEGER NOT NULL REFERENCES sites(id), day TEXT NOT NULL,
     path TEXT NOT NULL, requests INTEGER NOT NULL,
@@ -73,7 +91,8 @@ CREATE TABLE IF NOT EXISTS daily_path (
 CREATE TABLE IF NOT EXISTS daily_referrer (
     site_id INTEGER NOT NULL REFERENCES sites(id), day TEXT NOT NULL,
     referrer_host TEXT NOT NULL, requests INTEGER NOT NULL,
-    human_requests INTEGER NOT NULL,
+    human_requests INTEGER NOT NULL, nonasset_requests INTEGER NOT NULL,
+    human_nonasset_requests INTEGER NOT NULL,
     PRIMARY KEY(site_id, day, referrer_host)
 );
 CREATE TABLE IF NOT EXISTS daily_agent (
@@ -86,14 +105,23 @@ CREATE TABLE IF NOT EXISTS daily_agent (
 CREATE TABLE IF NOT EXISTS daily_country (
     site_id INTEGER NOT NULL REFERENCES sites(id), day TEXT NOT NULL,
     country TEXT NOT NULL, requests INTEGER NOT NULL,
-    human_requests INTEGER NOT NULL,
+    human_requests INTEGER NOT NULL, nonasset_requests INTEGER NOT NULL,
+    human_nonasset_requests INTEGER NOT NULL,
     PRIMARY KEY(site_id, day, country)
 );
 CREATE TABLE IF NOT EXISTS daily_status (
     site_id INTEGER NOT NULL REFERENCES sites(id), day TEXT NOT NULL,
     status INTEGER NOT NULL, requests INTEGER NOT NULL,
-    human_requests INTEGER NOT NULL,
+    human_requests INTEGER NOT NULL, nonasset_requests INTEGER NOT NULL,
+    human_nonasset_requests INTEGER NOT NULL,
     PRIMARY KEY(site_id, day, status)
+);
+CREATE TABLE IF NOT EXISTS daily_404 (
+    site_id INTEGER NOT NULL REFERENCES sites(id), day TEXT NOT NULL,
+    path TEXT NOT NULL, requests INTEGER NOT NULL,
+    human_requests INTEGER NOT NULL, nonasset_requests INTEGER NOT NULL,
+    human_nonasset_requests INTEGER NOT NULL,
+    PRIMARY KEY(site_id, day, path)
 );
 """
 
@@ -147,4 +175,3 @@ def insert_requests(conn: sqlite3.Connection, rows: Iterable[tuple]) -> int:
         rows,
     )
     return conn.total_changes - before
-

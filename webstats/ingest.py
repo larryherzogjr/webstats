@@ -215,7 +215,10 @@ def _consume_file(
         stats.lines_seen += 1
         text = raw.decode("utf-8", errors="replace").rstrip("\r\n")
         try:
-            row = parse_line(text, log_format, configured_site.name, config.server.secret_key)
+            row = parse_line(
+                text, log_format, configured_site.name, config.server.secret_key,
+                timezone_name=config.server.timezone,
+            )
             selected_site = _select_site(row.host, configured_site.name, site_ids, log_format)
             if selected_site is None:
                 raise ParseError(f"Unknown host {row.host!r}")
@@ -269,4 +272,3 @@ def main(argv: Optional[list[str]] = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
