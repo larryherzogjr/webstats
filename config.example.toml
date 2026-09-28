@@ -18,32 +18,32 @@ db_path = "/var/lib/webstats/dbip-country-lite.mmdb"
 ip_hash_salt_rotation = "daily"
 
 [logs]
-format = "combined"
+format = "combined_host"
 
 [[sites]]
 name = "larryherzogjr.com"
-paths = ["/var/log/nginx/larryherzogjr.com.access.log"]
+paths = ["/var/log/nginx/webstats.access.log"]
 
 [[sites]]
 name = "ad-fontes.app"
-paths = ["/var/log/nginx/ad-fontes.app.access.log"]
+paths = ["/var/log/nginx/webstats.access.log"]
 
 [[sites]]
 name = "pick5.ospdy.com"
-paths = ["/var/log/nginx/pick5.ospdy.com.access.log"]
+paths = ["/var/log/nginx/webstats.access.log"]
 
 [[sites]]
 name = "hdu.ospdy.com"
-paths = ["/var/log/nginx/hdu.ospdy.com.access.log"]
+paths = ["/var/log/nginx/webstats.access.log"]
 
 [[sites]]
 name = "euphonium.studio"
-paths = ["/var/log/nginx/euphonium.studio.access.log"]
+paths = ["/var/log/nginx/webstats.access.log"]
 
 [[sites]]
 name = "alexis.tips"
-paths = ["/var/log/nginx/alexis.tips.access.log"]
+paths = ["/var/log/nginx/webstats.access.log"]
 
 [[sites]]
 name = "herzogenclave.com"
-paths = ["/var/log/nginx/herzogenclave.com.access.log"]
+paths = ["/var/log/nginx/webstats.access.log"]

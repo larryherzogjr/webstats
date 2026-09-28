@@ -32,39 +32,41 @@ These commands target Debian or Ubuntu. Perform the discovery checks in
 actual access-log paths and format are confirmed.
 
 1. Install system packages:
-   `sudo apt install python3.11 python3.11-venv nginx curl`.
+   `sudo apt install python3 python3-venv nginx curl`.
 2. Create the service account:
    `sudo useradd --system --home /var/lib/webstats --shell /usr/sbin/nologin webstats`
    and `sudo usermod -a -G adm webstats`.
 3. Copy this repository to `/opt/webstats` and set ownership:
    `sudo chown -R root:root /opt/webstats`.
 4. Create the virtual environment and install the app:
-   `sudo python3.11 -m venv /opt/webstats/.venv` then
+   `sudo python3 -m venv /opt/webstats/.venv` then
    `sudo /opt/webstats/.venv/bin/pip install /opt/webstats`.
 5. Create application directories:
    `sudo install -d -o root -g webstats -m 0750 /etc/webstats` and
    `sudo install -d -o webstats -g webstats -m 0750 /var/lib/webstats`.
 6. Install the configuration:
    `sudo install -o root -g webstats -m 0640 /opt/webstats/config.example.toml /etc/webstats/config.toml`.
-7. Edit `/etc/webstats/config.toml`, verify every site and log path, replace
-   `secret_key` with `openssl rand -hex 32`, and set the discovered log format.
+7. Edit `/etc/webstats/config.toml`, replace `secret_key` with
+   `openssl rand -hex 32`, and confirm the shared host-prefixed log settings.
 8. Set the admin password:
    `sudo /opt/webstats/.venv/bin/python /opt/webstats/scripts/set_password.py --config /etc/webstats/config.toml`.
-9. Test parsing against current and rotated history:
+9. Install `deploy/nginx-webstats-log.conf` in `/etc/nginx/conf.d`, create the
+   log with `www-data:adm` ownership, enable the privacy-reduced Ad Fontes log as
+   described below, and reload nginx.
+10. Test parsing against the new log:
    `sudo -u webstats /opt/webstats/.venv/bin/python /opt/webstats/scripts/backfill.py --config /etc/webstats/config.toml`.
-10. Install the units:
+11. Install the units:
     `sudo cp /opt/webstats/deploy/webstats*.service /opt/webstats/deploy/webstats-ingest.timer /etc/systemd/system/`
     then `sudo systemctl daemon-reload`.
-11. Start ingestion and the dashboard:
+12. Start ingestion and the dashboard:
     `sudo systemctl enable --now webstats-ingest.timer webstats.service`.
-12. Install `deploy/nginx-stats-http.conf` as the temporary vhost, reload nginx,
+13. Install `deploy/nginx-stats-http.conf` as the temporary vhost, reload nginx,
     obtain the certificate with the server's existing Certbot nginx convention,
     then replace it with `deploy/nginx-stats.conf`. Adjust certificate paths if
     Certbot chose a different certificate name.
-13. Validate and reload nginx:
-    `sudo nginx -t && sudo systemctl reload nginx`.
-14. Verify `https://stats.herzogenclave.com/api/health`, sign in, and add that
-    URL to the existing uptime monitor.
+14. Validate with `sudo nginx -t`, reload nginx, verify
+    `https://stats.herzogenclave.com/api/health`, sign in, and add that URL to
+    the existing uptime monitor.
 
 ## Configuration
 
@@ -77,8 +79,9 @@ tree. Adding a site requires only another `[[sites]]` block and its log path.
 $remote_addr - $remote_user [$time_local] "$request" $status $body_bytes_sent "$http_referer" "$http_user_agent"
 ```
 
-For one shared log with a leading vhost, use `combined_host` and assign the same
-path to each site. An explicit format string is also accepted. Required fields
+Production uses `combined_host` and assigns the shared
+`/var/log/nginx/webstats.access.log` path to every site. An explicit format
+string is also accepted. Required fields
 are `$remote_addr`, `$time_local`, `$status`, `$http_user_agent`, and either
 `$request` or both `$request_method` and `$request_uri`. Unknown variables are
 matched and ignored.
@@ -101,6 +104,47 @@ WEBSTATS_CONFIG=$PWD/config.toml WEBSTATS_INSECURE_COOKIE=1 .venv/bin/python -m 
 
 `WEBSTATS_INSECURE_COOKIE=1` is only for local HTTP development. Production
 defaults to secure cookies and must run behind HTTPS.
+
+## Production nginx traffic log
+
+Install the selected-host logging configuration and prepare its file before
+reloading nginx:
+
+```sh
+sudo install -o root -g root -m 0644 \
+  /opt/webstats/deploy/nginx-webstats-log.conf \
+  /etc/nginx/conf.d/webstats-log.conf
+sudo touch /var/log/nginx/webstats.access.log
+sudo chown www-data:adm /var/log/nginx/webstats.access.log
+sudo chmod 0640 /var/log/nginx/webstats.access.log
+```
+
+The map includes only the six ordinary sites. It deliberately excludes Ad
+Fontes from the inherited log, as well as Fuse, Wordfall, unknown hosts, and
+IP-address scans.
+
+In the HTTPS `server` block for `ad-fontes.app`, replace:
+
+```nginx
+access_log off;
+```
+
+with:
+
+```nginx
+access_log /var/log/nginx/webstats.access.log webstats_private_host;
+```
+
+The private format uses `$uri`, not `$request_uri`, so query strings never reach
+the log. It also writes `-` instead of the referrer. Test before reloading:
+
+```sh
+sudo nginx -t
+sudo systemctl reload nginx
+```
+
+Existing `/var/log/nginx/access.log` history cannot be separated by host and is
+not imported. Webstats history begins when the dedicated log is enabled.
 
 ## Operations
 

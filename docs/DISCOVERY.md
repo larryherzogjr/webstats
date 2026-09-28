@@ -2,13 +2,10 @@
 
 Date: 2026-09-28
 
-## Scope and limitation
+## Scope
 
-Discovery ran in the Codex development workspace on `iMav-MBA.local`, not on the
-Hetzner deployment server. The deployment server is not connected to this
-workspace, so its nginx vhosts and access logs could not be inspected. The
-application remains fully configuration-driven, and the commands below make the
-remaining server-side verification explicit.
+Initial discovery ran in the Codex development workspace. Production findings
+were then supplied from the Hetzner server on 2026-09-28.
 
 ## Findings on the available host
 
@@ -28,12 +25,35 @@ remaining server-side verification explicit.
 - Repository: the workspace initially contained only the project plan and was not
   a Git repository.
 
+## Production findings
+
+- Operating system: Ubuntu 24.04.5 LTS.
+- Python: 3.12.3.
+- nginx: 1.24.0 from Ubuntu.
+- nginx writes one global `/var/log/nginx/access.log` using the built-in combined
+  format. That format does not contain `$host`, so existing history cannot be
+  reliably separated by site.
+- Logrotate runs daily, retains 14 rotations, compresses older files, and uses
+  `delaycompress`. The immediately previous `.1` file remains uncompressed and
+  is compatible with incremental rotation recovery.
+- Rotated files are created with mode `0640`, owner `www-data`, and group `adm`.
+- `ad-fontes.app` deliberately disables its ordinary access log to avoid storing
+  OAuth codes, passage queries, or identities.
+- `fuse.ospdy.com` and `wordfall.ospdy.com` are present on the server but are out
+  of scope for Webstats.
+
 ## Configuration decision
 
-`config.example.toml` uses the per-vhost nginx paths from the approved plan and
-the standard nginx `combined` format. These are deployment defaults, not claimed
-discoveries. Every path and the format must be checked on the Hetzner server
-before enabling the ingest timer.
+`config.example.toml` now uses one dedicated host-prefixed log at
+`/var/log/nginx/webstats.access.log` and the `combined_host` parser. The nginx
+configuration in `deploy/nginx-webstats-log.conf` writes only the six ordinary
+sites selected in its map. It excludes Ad Fontes, Fuse, Wordfall, unknown hosts,
+and IP-address scans from the inherited log.
+
+The Ad Fontes HTTPS server must replace its existing `access_log off` directive
+with the privacy-reduced `webstats_private_host` log. That format records the
+host, hashed-later IP source, timestamp, method, path without query string,
+status, byte count, and user agent. It writes no query string or referrer.
 
 ## Production verification commands
 
@@ -51,14 +71,7 @@ systemctl cat nginx
 Record any differences here and update only `config.toml`. Do not alter existing
 site vhosts or log directives.
 
-## Items requiring production confirmation
+## Remaining production confirmation
 
-- Exact access-log path for each configured site.
-- Whether the active format is standard `combined`, host-prefixed `combined`, or
-  a custom `log_format` string.
-- Whether each site has its own log or all sites share one host-prefixed log.
-- Rotation naming and frequency, including whether `.1` is left uncompressed for
-  one cycle.
-- The service account and group conventions already used on the server.
-- Availability of Python 3.11 or newer and gunicorn deployment conventions.
+- Exact source file containing the Ad Fontes HTTPS `access_log off` directive.
 - Certbot certificate name and TLS include paths for `stats.herzogenclave.com`.
