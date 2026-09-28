@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "webstats"
+version = "1.0.0"
+description = "Private, log-based web statistics dashboard"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "Flask==3.1.2",
+  "bcrypt==4.3.0",
+  "gunicorn==23.0.0",
+]
+
+[project.optional-dependencies]
+geoip = ["maxminddb==2.8.2"]
+
+[project.scripts]
+webstats = "webstats.app:main"
+webstats-ingest = "webstats.ingest:main"
+
+[tool.setuptools.packages.find]
+include = ["webstats*"]
+
+[tool.setuptools.package-data]
+webstats = ["templates/*.html", "static/*"]
+

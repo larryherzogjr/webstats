@@ -13,8 +13,8 @@ remaining server-side verification explicit.
 ## Findings on the available host
 
 - Operating system: macOS 26.6.2, arm64.
-- Python: 3.9.6. Production requires Python 3.11 or newer. The source remains
-  compatible with Python 3.9 so parser and database tests can run locally.
+- System Python: 3.9.6. Homebrew Python 3.12 is also available and is used for
+  development. Production requires Python 3.11 or newer.
 - nginx: not installed.
 - Apache: the macOS system `apachectl` exists, but no evidence indicates that it
   serves the sites in scope.
@@ -62,4 +62,3 @@ site vhosts or log directives.
 - The service account and group conventions already used on the server.
 - Availability of Python 3.11 or newer and gunicorn deployment conventions.
 - Certbot certificate name and TLS include paths for `stats.herzogenclave.com`.
-

@@ -1,0 +1,12 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.coverage
+.pytest_cache/
+*.db
+*.db-shm
+*.db-wal
+ingest-state.json
+config.toml
+
