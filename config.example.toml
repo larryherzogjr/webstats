@@ -1,0 +1,49 @@
+[server]
+bind = "127.0.0.1:5010"
+secret_key = "replace-with-a-long-random-value"
+admin_user = "larry"
+admin_password_hash = "$2b$12$replace.with.scripts.set_password.py"
+timezone = "America/Chicago"
+
+[storage]
+db_path = "/var/lib/webstats/webstats.db"
+state_path = "/var/lib/webstats/ingest-state.json"
+raw_retention_days = 90
+
+[geoip]
+enabled = false
+db_path = "/var/lib/webstats/dbip-country-lite.mmdb"
+
+[privacy]
+ip_hash_salt_rotation = "daily"
+
+[logs]
+format = "combined"
+
+[[sites]]
+name = "larryherzogjr.com"
+paths = ["/var/log/nginx/larryherzogjr.com.access.log"]
+
+[[sites]]
+name = "ad-fontes.app"
+paths = ["/var/log/nginx/ad-fontes.app.access.log"]
+
+[[sites]]
+name = "pick5.ospdy.com"
+paths = ["/var/log/nginx/pick5.ospdy.com.access.log"]
+
+[[sites]]
+name = "hdu.ospdy.com"
+paths = ["/var/log/nginx/hdu.ospdy.com.access.log"]
+
+[[sites]]
+name = "euphonium.studio"
+paths = ["/var/log/nginx/euphonium.studio.access.log"]
+
+[[sites]]
+name = "alexis.tips"
+paths = ["/var/log/nginx/alexis.tips.access.log"]
+
+[[sites]]
+name = "herzogenclave.com"
+paths = ["/var/log/nginx/herzogenclave.com.access.log"]
