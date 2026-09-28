@@ -5,6 +5,8 @@ import tempfile
 import unittest
 
 from scripts.backfill import run
+from webstats.config import load_config
+from webstats.ingest import ingest_once
 from tests.test_ingest import log_line
 
 
@@ -13,6 +15,7 @@ class BackfillTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             base = root / "example.access.log"
+            base.write_text(log_line("/current"))
             archive = Path(str(base) + ".2.gz")
             with gzip.open(archive, "wt") as handle:
                 handle.write(log_line("/archived"))
@@ -42,10 +45,12 @@ paths = ["{base}"]
             )
             first = run(str(config))
             second = run(str(config))
-            self.assertEqual(first.inserted, 1)
+            incremental = ingest_once(load_config(config))
+            self.assertEqual(first.inserted, 2)
             self.assertEqual(second.inserted, 0)
+            self.assertEqual(incremental.inserted, 0)
             with sqlite3.connect(root / "test.db") as conn:
-                self.assertEqual(conn.execute("SELECT COUNT(*) FROM requests").fetchone()[0], 1)
+                self.assertEqual(conn.execute("SELECT COUNT(*) FROM requests").fetchone()[0], 2)
 
 
 if __name__ == "__main__":

@@ -7,13 +7,14 @@ import argparse
 import gzip
 import hashlib
 import logging
+import os
 from pathlib import Path
 from typing import Iterator, Optional
 
 from webstats.config import load_config
 from webstats.db import connect, initialize, insert_requests, site_id_map
 from webstats.geo import GeoLookup
-from webstats.ingest import IngestStats, _record_tuple, _select_site
+from webstats.ingest import IngestStats, _record_tuple, _select_site, _source_key
 from webstats.logformat import compile_log_format
 from webstats.parser import ParseError, ParsedRequest, parse_line
 from webstats.rollup import maintain_rollups
@@ -22,11 +23,18 @@ from webstats.rollup import maintain_rollups
 LOG = logging.getLogger("webstats.backfill")
 
 
-def lines_from(path: Path) -> Iterator[tuple[int, bytes]]:
+def lines_from(path: Path) -> Iterator[tuple[int, Optional[int], Optional[int], bytes]]:
     opener = gzip.open if path.suffix == ".gz" else open
     with opener(path, "rb") as handle:
-        for number, line in enumerate(handle, 1):
-            yield number, line
+        inode = None if path.suffix == ".gz" else os.fstat(handle.fileno()).st_ino
+        number = 0
+        while True:
+            offset = handle.tell()
+            line = handle.readline()
+            if not line:
+                break
+            number += 1
+            yield number, None if inode is None else offset, inode, line
 
 
 def discover_archives(base: Path) -> list[Path]:
@@ -53,7 +61,7 @@ def run(config_path: str) -> IngestStats:
                     seen_paths.add(key)
                     LOG.info("Importing %s", path)
                     rows = []
-                    for line_number, raw in lines_from(path):
+                    for line_number, line_offset, inode, raw in lines_from(path):
                         stats.lines_seen += 1
                         text = raw.decode("utf-8", errors="replace").rstrip("\r\n")
                         try:
@@ -69,8 +77,11 @@ def run(config_path: str) -> IngestStats:
                                 country = geo.country(match.group("remote_addr") if match else "")
                                 if country:
                                     row = ParsedRequest(**{**row.__dict__, "country": country})
-                            digest = hashlib.sha256(raw).hexdigest()[:16]
-                            source = f"backfill:{path.resolve()}:{line_number}:{digest}"
+                            if inode is not None and line_offset is not None:
+                                source = _source_key(path, inode, line_offset, raw)
+                            else:
+                                digest = hashlib.sha256(raw).hexdigest()[:16]
+                                source = f"backfill:{path.resolve()}:{line_number}:{digest}"
                             rows.append(_record_tuple(source, ids[selected], row))
                             stats.parsed += 1
                         except ParseError as exc:
