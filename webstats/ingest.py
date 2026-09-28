@@ -8,7 +8,7 @@ import json
 import logging
 import os
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, Iterable, Iterator, Optional
 
@@ -28,6 +28,7 @@ class IngestStats:
     parsed: int = 0
     parse_failures: int = 0
     inserted: int = 0
+    affected_days: set[str] = field(default_factory=set)
 
 
 def load_state(path: Path) -> Dict[str, dict]:
@@ -128,7 +129,10 @@ def ingest_once(config: Config) -> IngestStats:
                 save_state(config.storage.state_path, state)
         from .rollup import maintain_rollups
 
-        maintain_rollups(conn, config.storage.raw_retention_days)
+        maintain_rollups(
+            conn, config.storage.raw_retention_days, stats.affected_days,
+            config.server.timezone,
+        )
         conn.execute(
             """
             UPDATE ingest_runs SET finished_at=?, lines_seen=?, parsed=?,
@@ -234,6 +238,7 @@ def _consume_file(
                 )
             )
             stats.parsed += 1
+            stats.affected_days.add(row.day)
         except ParseError as exc:
             stats.parse_failures += 1
             if stats.parse_failures <= 10:

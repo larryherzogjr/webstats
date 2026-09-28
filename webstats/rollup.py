@@ -3,14 +3,26 @@
 from __future__ import annotations
 
 import sqlite3
-from datetime import date, timedelta
+from datetime import datetime, timedelta
+from typing import Iterable, Optional
+from zoneinfo import ZoneInfo
 
 
-def maintain_rollups(conn: sqlite3.Connection, retention_days: int) -> None:
-    days = [row[0] for row in conn.execute("SELECT DISTINCT day FROM requests")]
+def maintain_rollups(
+    conn: sqlite3.Connection,
+    retention_days: int,
+    affected_days: Optional[Iterable[str]] = None,
+    timezone_name: str = "UTC",
+) -> None:
+    today = datetime.now(ZoneInfo(timezone_name)).date()
+    if affected_days is None:
+        days = {row[0] for row in conn.execute("SELECT DISTINCT day FROM requests")}
+    else:
+        days = set(affected_days)
+        days.update({today.isoformat(), (today - timedelta(days=1)).isoformat()})
     for day in days:
         recompute_day(conn, day)
-    cutoff = (date.today() - timedelta(days=retention_days)).isoformat()
+    cutoff = (today - timedelta(days=retention_days)).isoformat()
     conn.execute("DELETE FROM requests WHERE day < ?", (cutoff,))
     conn.commit()
 

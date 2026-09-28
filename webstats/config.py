@@ -125,14 +125,19 @@ def load_config(path: str | Path) -> Config:
         names.add(name)
         sites.append(SiteConfig(name=name, paths=resolved))
 
+    secret_key = _text(server, "secret_key", "server")
+    if len(secret_key) < 32 or secret_key.startswith("replace-"):
+        raise ConfigError("server.secret_key must be a generated value of at least 32 characters")
+    password_hash = _text(server, "admin_password_hash", "server")
+    if not password_hash.startswith(("$2a$", "$2b$", "$2y$")):
+        raise ConfigError("server.admin_password_hash must be set with scripts/set_password.py")
+
     return Config(
         server=ServerConfig(
             bind=_text(server, "bind", "server"),
-            secret_key=_text(server, "secret_key", "server"),
+            secret_key=secret_key,
             admin_user=_text(server, "admin_user", "server"),
-            admin_password_hash=_text(
-                server, "admin_password_hash", "server"
-            ),
+            admin_password_hash=password_hash,
             timezone=_text(server, "timezone", "server"),
         ),
         storage=StorageConfig(

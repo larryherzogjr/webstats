@@ -1,0 +1,25 @@
+[Unit]
+Description=Webstats dashboard
+After=network.target
+
+[Service]
+Type=simple
+User=webstats
+Group=webstats
+WorkingDirectory=/opt/webstats
+Environment=WEBSTATS_CONFIG=/etc/webstats/config.toml
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStart=/opt/webstats/.venv/bin/gunicorn --workers 2 --bind 127.0.0.1:5010 --access-logfile - --error-logfile - "webstats.app:create_app()"
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=20
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+NoNewPrivileges=true
+ReadOnlyPaths=/etc/webstats
+ReadWritePaths=/var/lib/webstats
+UMask=0027
+
+[Install]
+WantedBy=multi-user.target

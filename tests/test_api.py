@@ -98,6 +98,11 @@ class ApiTests(unittest.TestCase):
         response = self.client.get("/api/overview?from=2026-09-29&to=2026-09-28")
         self.assertEqual(response.status_code, 400)
 
+    def test_invalid_integer_is_rejected(self):
+        self.authenticate()
+        response = self.client.get("/api/live?minutes=forever")
+        self.assertEqual(response.status_code, 400)
+
 
 if __name__ == "__main__":
     unittest.main()

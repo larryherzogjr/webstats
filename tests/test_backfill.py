@@ -20,9 +20,9 @@ class BackfillTests(unittest.TestCase):
             config.write_text(
                 f'''[server]
 bind = "127.0.0.1:5010"
-secret_key = "secret"
+secret_key = "0123456789abcdef0123456789abcdef"
 admin_user = "admin"
-admin_password_hash = "hash"
+admin_password_hash = "$2b$12$abcdefghijklmnopqrstuuABCDEFGHIJKLMNOPQRSTUVWX123456"
 timezone = "UTC"
 [storage]
 db_path = "{root / 'test.db'}"

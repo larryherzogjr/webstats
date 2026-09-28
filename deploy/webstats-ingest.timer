@@ -1,0 +1,12 @@
+[Unit]
+Description=Run Webstats ingestion every five minutes
+
+[Timer]
+OnCalendar=*:0/5
+Persistent=true
+RandomizedDelaySec=15
+Unit=webstats-ingest.service
+
+[Install]
+WantedBy=timers.target
+

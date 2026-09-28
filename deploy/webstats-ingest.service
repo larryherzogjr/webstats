@@ -1,0 +1,19 @@
+[Unit]
+Description=Ingest access logs for Webstats
+After=local-fs.target
+
+[Service]
+Type=oneshot
+User=webstats
+Group=webstats
+SupplementaryGroups=adm
+WorkingDirectory=/opt/webstats
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStart=/opt/webstats/.venv/bin/python -m webstats.ingest --config /etc/webstats/config.toml
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+NoNewPrivileges=true
+ReadOnlyPaths=/etc/webstats /var/log/nginx
+ReadWritePaths=/var/lib/webstats
+UMask=0027

@@ -29,6 +29,14 @@ def _flags() -> tuple[int, int]:
     return (int(request.args.get("bots", "0") == "1"), int(request.args.get("assets", "0") == "1"))
 
 
+def _int_arg(name: str, default: int, minimum: int, maximum: int) -> int:
+    try:
+        value = int(request.args.get(name, default))
+    except (TypeError, ValueError):
+        raise ApiError(f"{name} must be an integer")
+    return min(max(value, minimum), maximum)
+
+
 def _date_range() -> tuple[str, str]:
     config = current_app.config["WEBSTATS_CONFIG"]
     today = datetime.now(ZoneInfo(config.server.timezone)).date()
@@ -107,7 +115,13 @@ def health():
         for index, value in enumerate(state.values())
         if isinstance(value, dict)
     ]
-    ok = bool(last_run and last_run.get("status") == "ok")
+    now = int(datetime.now(timezone.utc).timestamp())
+    ok = bool(
+        last_run
+        and last_run.get("status") == "ok"
+        and last_run.get("finished_at")
+        and last_run["finished_at"] >= now - 15 * 60
+    )
     return jsonify(
         {
             "status": "ok" if ok else "degraded",
@@ -254,8 +268,8 @@ def timeseries(name: str):
 def pages(name: str):
     start, end = _date_range()
     bots, assets = _flags()
-    limit = min(max(int(request.args.get("limit", 25)), 1), 100)
-    offset = max(int(request.args.get("offset", 0)), 0)
+    limit = _int_arg("limit", 25, 1, 100)
+    offset = _int_arg("offset", 0, 0, 1_000_000)
     request_col = "requests" if bots else "human_requests"
     unique_col = "unique_visitors" if bots else "human_unique_visitors"
     asset_clause = "" if assets else "AND asset_requests=0"
@@ -280,7 +294,7 @@ def _ranked_endpoint(name: str, table: str, dimension: str, output: str):
     start, end = _date_range()
     bots, assets = _flags()
     metric = _metric_column(bots, assets)
-    limit = min(max(int(request.args.get("limit", 25)), 1), 100)
+    limit = _int_arg("limit", 25, 1, 100)
     with _conn() as conn:
         site = _site(conn, name)
         rows = [
@@ -303,8 +317,13 @@ def _ranked_endpoint(name: str, table: str, dimension: str, output: str):
 def referrers(name: str):
     response = _ranked_endpoint(name, "daily_referrer", "referrer_host", "referrers")
     body = response.get_json()
+    grouped: dict[str, int] = defaultdict(int)
     for row in body["referrers"]:
-        row["group"] = _referrer_group(row["referrer_host"])
+        grouped[_referrer_group(row["referrer_host"])] += row["requests"]
+    body["referrers"] = [
+        {"group": group, "requests": count}
+        for group, count in sorted(grouped.items(), key=lambda item: (-item[1], item[0]))
+    ]
     return jsonify(body)
 
 
@@ -402,7 +421,7 @@ def agents(name: str):
 @api_bp.get("/live")
 @login_required
 def live():
-    minutes = min(max(int(request.args.get("minutes", 60)), 1), 1440)
+    minutes = _int_arg("minutes", 60, 1, 1440)
     bots, assets = _flags()
     cutoff = int(datetime.now(timezone.utc).timestamp()) - minutes * 60
     with _conn() as conn:

@@ -109,13 +109,14 @@ def parse_line(
     path, query = normalize_path(target)
     user_agent = _dash_to_empty(fields.get("http_user_agent")) or ""
     ua_family, is_bot = classify_user_agent(user_agent)
-    referrer = _dash_to_empty(fields.get("http_referer"))
-    referrer_host = _referrer_host(referrer, site_name)
     host = _dash_to_empty(fields.get("host"))
+    normalized_host = host.lower().split(":", 1)[0] if host else None
+    referrer = _dash_to_empty(fields.get("http_referer"))
+    referrer_host = _referrer_host(referrer, normalized_host or site_name)
     byte_value = fields.get("body_bytes_sent") or fields.get("bytes_sent") or "0"
     remote_addr = fields.get("remote_addr") or ""
     return ParsedRequest(
-        host=host.lower().split(":", 1)[0] if host else None,
+        host=normalized_host,
         ts=int(occurred.timestamp()),
         day=day,
         ip_hash=daily_ip_hash(secret_key, day, remote_addr),

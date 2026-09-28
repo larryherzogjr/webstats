@@ -31,6 +31,17 @@ class ParserTests(unittest.TestCase):
         self.assertEqual(row.ua_family, "Safari")
         self.assertEqual(row.os_family, "iOS")
 
+    def test_host_prefixed_self_referral_uses_line_host(self):
+        line = (
+            'other.test 203.0.113.10 - - [28/Sep/2026:10:15:00 -0500] '
+            '"GET / HTTP/1.1" 200 42 "https://www.other.test/page" '
+            '"Mozilla/5.0 Safari/537.36"'
+        )
+        row = parse_line(
+            line, compile_log_format("combined_host"), "first.test", "secret"
+        )
+        self.assertIsNone(row.referrer_host)
+
     def test_explicit_format(self):
         compiled = compile_log_format(COMBINED + " $request_time")
         line = (FIXTURES / "combined.log").read_text().splitlines()[0] + " 0.013"

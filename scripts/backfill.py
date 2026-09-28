@@ -83,7 +83,10 @@ def run(config_path: str) -> IngestStats:
                             rows.clear()
                     stats.inserted += insert_requests(conn, rows)
                     conn.commit()
-        maintain_rollups(conn, config.storage.raw_retention_days)
+        maintain_rollups(
+            conn, config.storage.raw_retention_days,
+            timezone_name=config.server.timezone,
+        )
     finally:
         geo.close()
         conn.close()
