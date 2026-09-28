@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% block title %}Health | Webstats{% endblock %}
+{% block page_id %}health{% endblock %}
+{% block content %}
+<div class="page-heading">
+  <div><p class="eyebrow">Operations</p><h1>System health</h1></div>
+  <span id="health-badge" class="status-badge">Checking</span>
+</div>
+<div id="page-error" class="alert hidden" role="alert"></div>
+<section id="health-metrics" class="metric-grid"></section>
+<section class="panel">
+  <div class="panel-heading"><div><p class="eyebrow">Ingestion</p><h2>Latest run</h2></div></div>
+  <div class="table-wrap"><table><thead><tr><th>Started</th><th>Finished</th><th>Lines</th><th>Parsed</th><th>Failures</th><th>Inserted</th></tr></thead><tbody id="health-run"></tbody></table></div>
+</section>
+<section class="panel">
+  <div class="panel-heading"><div><p class="eyebrow">Offsets</p><h2>Configured logs</h2></div></div>
+  <div class="table-wrap"><table><thead><tr><th>Log</th><th>Byte offset</th><th>Last checked</th></tr></thead><tbody id="health-logs"></tbody></table></div>
+</section>
+{% endblock %}
+

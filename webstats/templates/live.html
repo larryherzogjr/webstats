@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+{% block title %}Live | Webstats{% endblock %}
+{% block page_id %}live{% endblock %}
+{% block content %}
+<div class="page-heading">
+  <div><p class="eyebrow"><span class="pulse"></span> Refreshes every minute</p><h1>Last 60 minutes</h1></div>
+  <p id="live-updated" class="range-label"></p>
+</div>
+<section class="filters compact">
+  <div class="toggles">
+    <label class="switch"><input id="include-bots" type="checkbox"> Include bots</label>
+    <label class="switch"><input id="include-assets" type="checkbox"> Include assets</label>
+  </div>
+</section>
+<div id="page-error" class="alert hidden" role="alert"></div>
+<section id="live-cards" class="site-grid" aria-live="polite"></section>
+{% endblock %}

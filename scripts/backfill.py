@@ -58,7 +58,8 @@ def run(config_path: str) -> IngestStats:
                         text = raw.decode("utf-8", errors="replace").rstrip("\r\n")
                         try:
                             row = parse_line(
-                                text, compiled, site.name, config.server.secret_key
+                                text, compiled, site.name, config.server.secret_key,
+                                timezone_name=config.server.timezone,
                             )
                             selected = _select_site(row.host, site.name, ids, compiled)
                             if selected is None:
@@ -105,4 +106,3 @@ def main(argv: Optional[list[str]] = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

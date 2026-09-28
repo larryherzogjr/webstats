@@ -53,6 +53,19 @@ class ApiTests(unittest.TestCase):
         response = self.client.get("/api/sites")
         self.assertEqual(response.status_code, 401)
 
+    def test_login_and_html_pages(self):
+        self.assertEqual(self.client.get("/").status_code, 302)
+        self.assertEqual(self.client.get("/login").status_code, 200)
+        response = self.client.post(
+            "/login", data={"username": "admin", "password": "password"}
+        )
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(self.client.get("/").status_code, 200)
+        self.assertEqual(self.client.get("/site/example.com").status_code, 200)
+        self.assertEqual(self.client.get("/live").status_code, 200)
+        self.assertEqual(self.client.get("/health").status_code, 200)
+        self.assertEqual(self.client.get("/site/not-configured.test").status_code, 404)
+
     def test_health_is_public_and_safe(self):
         response = self.client.get("/api/health")
         self.assertEqual(response.status_code, 200)

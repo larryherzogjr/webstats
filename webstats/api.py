@@ -301,7 +301,28 @@ def _ranked_endpoint(name: str, table: str, dimension: str, output: str):
 @api_bp.get("/site/<path:name>/referrers")
 @login_required
 def referrers(name: str):
-    return _ranked_endpoint(name, "daily_referrer", "referrer_host", "referrers")
+    response = _ranked_endpoint(name, "daily_referrer", "referrer_host", "referrers")
+    body = response.get_json()
+    for row in body["referrers"]:
+        row["group"] = _referrer_group(row["referrer_host"])
+    return jsonify(body)
+
+
+def _referrer_group(host: str) -> str:
+    value = host.lower()
+    groups = (
+        (("google.",), "Google"),
+        (("bing.com",), "Bing"),
+        (("duckduckgo.com", "duck.com"), "DuckDuckGo"),
+        (("search.yahoo.",), "Yahoo"),
+        (("facebook.com", "instagram.com", "threads.net"), "Meta"),
+        (("x.com", "twitter.com", "t.co"), "X / Twitter"),
+        (("linkedin.com",), "LinkedIn"),
+    )
+    for needles, label in groups:
+        if any(needle in value for needle in needles):
+            return label
+    return host
 
 
 @api_bp.get("/site/<path:name>/countries")

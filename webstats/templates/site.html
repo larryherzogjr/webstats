@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+{% block title %}{{ site_name }} | Webstats{% endblock %}
+{% block page_id %}site{% endblock %}
+{% block body_data %} data-site="{{ site_name }}"{% endblock %}
+{% block content %}
+<div class="page-heading">
+  <div><p class="eyebrow">Site detail</p><h1>{{ site_name }}</h1></div>
+  <a class="text-link" href="{{ url_for('views.overview') }}">Back to overview</a>
+</div>
+{% include "_filters.html" %}
+<div id="page-error" class="alert hidden" role="alert"></div>
+<section class="panel chart-panel">
+  <div class="panel-heading"><div><p class="eyebrow">Trend</p><h2>Requests and daily visitors</h2></div></div>
+  <div class="chart-wrap"><canvas id="site-chart"></canvas></div>
+</section>
+<div class="detail-grid">
+  <section class="panel span-two">
+    <div class="panel-heading"><div><p class="eyebrow">Content</p><h2>Top pages</h2></div><div class="pager"><button id="pages-prev">Previous</button><button id="pages-next">Next</button></div></div>
+    <div class="table-wrap"><table><thead><tr><th>Path</th><th>Requests</th><th>Daily visitors</th></tr></thead><tbody id="pages-table"></tbody></table></div>
+  </section>
+  <section class="panel">
+    <div class="panel-heading"><div><p class="eyebrow">Discovery</p><h2>Referrers</h2></div></div>
+    <div class="table-wrap"><table><thead><tr><th>Source</th><th>Requests</th></tr></thead><tbody id="referrers-table"></tbody></table></div>
+  </section>
+  <section class="panel">
+    <div class="panel-heading"><div><p class="eyebrow">Responses</p><h2>Status codes</h2></div></div>
+    <div class="chart-wrap small"><canvas id="status-chart"></canvas></div>
+  </section>
+  <section class="panel">
+    <div class="panel-heading"><div><p class="eyebrow">Broken links</p><h2>Top 404 paths</h2></div></div>
+    <div class="table-wrap"><table><thead><tr><th>Path</th><th>Requests</th></tr></thead><tbody id="missing-table"></tbody></table></div>
+  </section>
+  <section class="panel">
+    <div class="panel-heading"><div><p class="eyebrow">Clients</p><h2>Browsers</h2></div></div>
+    <div class="table-wrap"><table><thead><tr><th>Family</th><th>Requests</th></tr></thead><tbody id="browsers-table"></tbody></table></div>
+  </section>
+  <section class="panel">
+    <div class="panel-heading"><div><p class="eyebrow">Clients</p><h2>Operating systems</h2></div></div>
+    <div class="table-wrap"><table><thead><tr><th>Family</th><th>Requests</th></tr></thead><tbody id="os-table"></tbody></table></div>
+  </section>
+  <section class="panel">
+    <div class="panel-heading"><div><p class="eyebrow">Location</p><h2>Countries</h2></div></div>
+    <div class="table-wrap"><table><thead><tr><th>Country</th><th>Requests</th></tr></thead><tbody id="countries-table"></tbody></table></div>
+  </section>
+  <section class="panel">
+    <div class="panel-heading"><div><p class="eyebrow">Automation</p><h2>Bot traffic</h2></div></div>
+    <div class="table-wrap"><table><thead><tr><th>Crawler</th><th>Requests</th></tr></thead><tbody id="bots-table"></tbody></table></div>
+  </section>
+</div>
+{% endblock %}
+

@@ -23,7 +23,7 @@ def create_app(config: Config | None = None, config_path: str | Path | None = No
     app = Flask(__name__)
     app.config.update(
         SECRET_KEY=config.server.secret_key,
-        SESSION_COOKIE_SECURE=True,
+        SESSION_COOKIE_SECURE=os.environ.get("WEBSTATS_INSECURE_COOKIE") != "1",
         SESSION_COOKIE_HTTPONLY=True,
         SESSION_COOKIE_SAMESITE="Lax",
         PERMANENT_SESSION_LIFETIME=8 * 60 * 60,

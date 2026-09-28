@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>{% block title %}Webstats{% endblock %}</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+  {% block head %}{% endblock %}
+</head>
+<body data-page="{% block page_id %}{% endblock %}"{% block body_data %}{% endblock %}>
+  <header class="topbar">
+    <a class="brand" href="{{ url_for('views.overview') }}" aria-label="Webstats overview">
+      <span class="brand-mark">W</span>
+      <span><strong>Webstats</strong><small>Private traffic intelligence</small></span>
+    </a>
+    <nav aria-label="Primary navigation">
+      <a href="{{ url_for('views.overview') }}">Overview</a>
+      <a href="{{ url_for('views.live') }}">Live</a>
+      <a href="{{ url_for('views.health') }}">Health</a>
+      <form action="{{ url_for('auth.logout') }}" method="post">
+        <button class="nav-button" type="submit">Sign out</button>
+      </form>
+    </nav>
+  </header>
+  <main class="shell">
+    {% block content %}{% endblock %}
+  </main>
+  <footer>Log-based analytics. No tracking scripts. No raw IP addresses stored.</footer>
+  <script src="{{ url_for('static', filename='chart.umd.min.js') }}"></script>
+  <script src="{{ url_for('static', filename='dashboard.js') }}"></script>
+</body>
+</html>
+
