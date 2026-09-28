@@ -26,7 +26,8 @@ def set_password(config_path: Path, password: str) -> None:
     updated, count = PASSWORD_LINE.subn(replacement, source, count=1)
     if count != 1:
         raise ValueError("Could not find one admin_password_hash setting")
-    mode = config_path.stat().st_mode & 0o777
+    metadata = config_path.stat()
+    mode = metadata.st_mode & 0o777
     descriptor, temporary_name = tempfile.mkstemp(
         dir=config_path.parent, prefix=config_path.name + ".", suffix=".tmp"
     )
@@ -37,6 +38,7 @@ def set_password(config_path: Path, password: str) -> None:
             handle.flush()
             os.fsync(handle.fileno())
         os.chmod(temporary, mode)
+        os.chown(temporary, metadata.st_uid, metadata.st_gid)
         os.replace(temporary, config_path)
     finally:
         if temporary.exists():
@@ -61,4 +63,3 @@ def main(argv: Optional[list[str]] = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

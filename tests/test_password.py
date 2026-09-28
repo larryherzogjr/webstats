@@ -1,6 +1,8 @@
+import os
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 import bcrypt
 
@@ -15,13 +17,17 @@ class PasswordToolTests(unittest.TestCase):
                 '[server]\nadmin_user = "larry"\nadmin_password_hash = "old" # keep\n'
             )
             path.chmod(0o640)
-            set_password(path, "a-long-test-password")
+            original = path.stat()
+            with patch("scripts.set_password.os.chown", wraps=os.chown) as chown:
+                set_password(path, "a-long-test-password")
             text = path.read_text()
             self.assertIn('admin_user = "larry"', text)
             self.assertIn("# keep", text)
             encoded = text.split('admin_password_hash = "', 1)[1].split('"', 1)[0]
             self.assertTrue(bcrypt.checkpw(b"a-long-test-password", encoded.encode()))
             self.assertEqual(path.stat().st_mode & 0o777, 0o640)
+            chown.assert_called_once()
+            self.assertEqual(chown.call_args.args[1:], (original.st_uid, original.st_gid))
 
     def test_rejects_short_password(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -33,4 +39,3 @@ class PasswordToolTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-
