@@ -220,6 +220,12 @@ class ApiTests(unittest.TestCase):
         with patch("webstats.api.datetime", wraps=datetime) as clock:
             clock.now.return_value = now
             body = self.client.get("/api/live?minutes=60&limit=20").get_json()
+            private = self.client.get(
+                "/api/live?minutes=60&limit=20&site=ad-fontes.app"
+            ).get_json()
+            scoped = self.client.get(
+                "/api/live?minutes=60&limit=20&site=example.com"
+            ).get_json()
 
         site_totals = {item["site"]: item["requests"] for item in body["sites"]}
         self.assertEqual(site_totals["ad-fontes.app"], 1)
@@ -241,6 +247,14 @@ class ApiTests(unittest.TestCase):
             body["privacy"],
             {"excluded_activity_sites": ["ad-fontes.app"]},
         )
+        self.assertEqual(private["scope"], {"site": "ad-fontes.app"})
+        self.assertEqual(private["sites"][0]["requests"], 1)
+        self.assertEqual(private["activity"], [])
+        self.assertEqual(private["countries"], [])
+        self.assertEqual(private["totals"]["requests"], 0)
+        self.assertEqual(scoped["scope"], {"site": "example.com"})
+        self.assertEqual([row["site"] for row in scoped["sites"]], ["example.com"])
+        self.assertEqual(scoped["activity"][0]["site"], "example.com")
 
     def test_detail_endpoints_match_hand_count(self):
         self.authenticate()
@@ -407,6 +421,12 @@ class ApiTests(unittest.TestCase):
         ).get_json()
         self.assertEqual(with_assets["totals"]["requests"], 2)
         self.assertEqual(with_assets["totals"]["pages"], 2)
+        scoped_ai = self.client.get(
+            "/api/ai-crawlers?from=2026-09-28&to=2026-09-28"
+            "&site=example.com"
+        ).get_json()
+        self.assertEqual(scoped_ai["scope"], {"site": "example.com"})
+        self.assertEqual(scoped_ai["totals"], body["totals"])
 
         page = self.client.get(
             "/api/site/example.com/page?path=%2Flinked-essay"
@@ -485,6 +505,17 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(sightings["Inoreader"]["peak_subscribers"], 3)
         self.assertIsNone(sightings["Feedly"]["latest_subscribers"])
         self.assertIsNone(sightings["FreshRSS"]["latest_subscribers"])
+        scoped = self.client.get(
+            "/api/feed-readers?from=2026-09-28&to=2026-09-28&site=example.com"
+        ).get_json()
+        self.assertEqual(scoped["scope"], {"site": "example.com"})
+        self.assertEqual(scoped["totals"], body["totals"])
+        self.assertEqual(
+            self.client.get(
+                "/api/feed-readers?site=unknown.example"
+            ).status_code,
+            404,
+        )
 
     def test_almanac_records_streaks_milestones_and_calendar(self):
         with connect(self.config.storage.db_path) as conn:
@@ -670,6 +701,11 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(body["geography"]["new_countries"], ["US"])
         self.assertEqual(body["feeds"]["reported_subscribers"], 5)
         self.assertEqual(body["feeds"]["change"], 2)
+        scoped = self.client.get(
+            "/api/briefing?week=2026-09-28&site=example.com"
+        ).get_json()
+        self.assertEqual(scoped["scope"], {"site": "example.com"})
+        self.assertEqual(scoped["summary"]["requests"], 2)
         self.assertEqual(
             [week["week"] for week in body["available_weeks"]],
             ["2026-09-28", "2026-09-21"],

@@ -66,7 +66,8 @@ def live():
 @login_required
 def ai_crawlers():
     return render_template(
-        "ai_crawlers.html", server_today=_server_today(), force_bots=True
+        "ai_crawlers.html", server_today=_server_today(), force_bots=True,
+        site_filter=True,
     )
 
 
@@ -78,6 +79,7 @@ def feed_readers():
         server_today=_server_today(),
         force_bots=True,
         hide_assets=True,
+        site_filter=True,
     )
 
 

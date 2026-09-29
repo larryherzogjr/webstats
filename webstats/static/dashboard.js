@@ -11,6 +11,7 @@
   let pagesOffset = 0;
   let almanacState = almanacStateFromUrl();
   let briefingWeek = new URLSearchParams(window.location.search).get("week") || "";
+  let scopeSite = initialState.site;
 
   function localDate(date) {
     const copy = new Date(date.getTime() - date.getTimezoneOffset() * 60000);
@@ -41,6 +42,7 @@
       range: valid ? { from, to } : fallback,
       bots: params.get("bots") === "1",
       assets: params.get("assets") === "1",
+      site: params.get("site") || "",
     };
   }
 
@@ -68,7 +70,8 @@
   }
 
   function query(extra = {}) {
-    return new URLSearchParams({ ...range, ...filters(), ...persistentParams(), ...extra }).toString();
+    const scope = document.querySelector("#site-filter") && scopeSite ? { site: scopeSite } : {};
+    return new URLSearchParams({ ...range, ...filters(), ...persistentParams(), ...scope, ...extra }).toString();
   }
 
   function siteQuery() {
@@ -86,6 +89,19 @@
   function syncUrl(push = true) {
     const url = `${window.location.pathname}?${query()}`;
     window.history[push ? "pushState" : "replaceState"]({}, "", url);
+  }
+
+  async function setupSiteFilter(reload) {
+    const select = document.querySelector("#site-filter");
+    if (!select) return;
+    const data = await api("/api/sites");
+    select.innerHTML = ["", ...data.sites.map(item => item.name)]
+      .map(name => `<option value="${escapeHtml(name)}"${name === scopeSite ? " selected" : ""}>${escapeHtml(name || "All sites")}</option>`)
+      .join("");
+    select.addEventListener("change", () => {
+      scopeSite = select.value;
+      reload();
+    });
   }
 
   async function api(url) {
@@ -119,10 +135,13 @@
 
     function renderState(state) {
       range = state.range;
+      scopeSite = state.site;
       from.value = range.from;
       to.value = range.to;
       if (bots) bots.checked = state.bots;
       if (assets) assets.checked = state.assets;
+      const siteSelect = document.querySelector("#site-filter");
+      if (siteSelect) siteSelect.value = scopeSite;
       document.querySelectorAll("[data-days]").forEach(button => {
         const preset = defaultRange(Number(button.dataset.days));
         button.classList.toggle("active", preset.from === range.from && preset.to === range.to);
@@ -328,10 +347,14 @@
   async function loadBriefing(push = false) {
     clearError();
     try {
-      const suffix = briefingWeek ? `?week=${encodeURIComponent(briefingWeek)}` : "";
-      const data = await api(`/api/briefing${suffix}`);
+      const parameters = new URLSearchParams();
+      if (briefingWeek) parameters.set("week", briefingWeek);
+      if (scopeSite) parameters.set("site", scopeSite);
+      const data = await api(`/api/briefing?${parameters}`);
       briefingWeek = data.week.from;
-      window.history[push ? "pushState" : "replaceState"]({}, "", `${window.location.pathname}?week=${encodeURIComponent(briefingWeek)}`);
+      const urlParameters = new URLSearchParams({ week: briefingWeek });
+      if (scopeSite) urlParameters.set("site", scopeSite);
+      window.history[push ? "pushState" : "replaceState"]({}, "", `${window.location.pathname}?${urlParameters}`);
       document.querySelector("#briefing-range").textContent = dateLabel(data.week.from, data.week.to);
       const status = document.querySelector("#briefing-status");
       status.textContent = data.week.complete ? "Complete" : "In progress";
@@ -395,7 +418,11 @@
       loadBriefing(true);
     });
     window.addEventListener("popstate", () => {
-      briefingWeek = new URLSearchParams(window.location.search).get("week") || "";
+      const parameters = new URLSearchParams(window.location.search);
+      briefingWeek = parameters.get("week") || "";
+      scopeSite = parameters.get("site") || "";
+      const select = document.querySelector("#site-filter");
+      if (select) select.value = scopeSite;
       loadBriefing(false);
     });
   }
@@ -610,7 +637,9 @@
   async function loadLive() {
     clearError();
     try {
-      const data = await api("/api/live?minutes=60&limit=40");
+      const parameters = new URLSearchParams({ minutes: "60", limit: "40" });
+      if (scopeSite) parameters.set("site", scopeSite);
+      const data = await api(`/api/live?${parameters}`);
       document.querySelector("#live-updated").textContent = `Updated ${new Date(data.generated_at * 1000).toLocaleTimeString()}`;
       document.querySelector("#live-cards").innerHTML = data.sites.map(site => `<a class="site-card" href="/site/${encodeURIComponent(site.site)}"><span class="site-name">${escapeHtml(site.site)}</span><strong class="site-value">${fmt.format(site.requests)}</strong><span class="site-meta"><span>${fmt.format(site.unique_visitors)} visitors</span><span>${compactBytes(site.bytes)}</span></span></a>`).join("");
       document.querySelector("#live-metrics").innerHTML = [
@@ -622,7 +651,9 @@
       renderWorldRadar(data.countries);
       renderLiveStream(data.activity);
       const excluded = data.privacy.excluded_activity_sites.join(", ");
-      document.querySelector("#live-privacy").textContent = `${excluded} contributes only anonymous site totals and is excluded from this activity stream and map.`;
+      document.querySelector("#live-privacy").textContent = scopeSite && data.privacy.excluded_activity_sites.includes(scopeSite)
+        ? `${scopeSite} is privacy-protected. Only anonymous aggregate totals are shown; its activity stream and map remain hidden.`
+        : `${excluded} contributes only anonymous site totals and is excluded from this activity stream and map.`;
     } catch (error) { showError(error); }
   }
 
@@ -835,15 +866,39 @@
   }
   if (page === "page") { setupFilters(loadPage); loadPage(); }
   if (page === "live") {
+    setupSiteFilter(() => {
+      const parameters = new URLSearchParams();
+      if (scopeSite) parameters.set("site", scopeSite);
+      window.history.pushState({}, "", `${window.location.pathname}${parameters.size ? `?${parameters}` : ""}`);
+      loadLive();
+    });
+    window.addEventListener("popstate", () => {
+      scopeSite = new URLSearchParams(window.location.search).get("site") || "";
+      const select = document.querySelector("#site-filter");
+      if (select) select.value = scopeSite;
+      loadLive();
+    });
     loadLive();
     window.setInterval(updateLiveAges, 1000);
     window.setInterval(() => {
       if (document.visibilityState === "visible") loadLive();
     }, 10000);
   }
-  if (page === "ai-crawlers") { setupFilters(loadAiCrawlers); loadAiCrawlers(); }
-  if (page === "feed-readers") { setupFilters(loadFeedReaders); loadFeedReaders(); }
+  if (page === "ai-crawlers") {
+    setupFilters(loadAiCrawlers);
+    setupSiteFilter(() => { syncUrl(); loadAiCrawlers(); });
+    loadAiCrawlers();
+  }
+  if (page === "feed-readers") {
+    setupFilters(loadFeedReaders);
+    setupSiteFilter(() => { syncUrl(); loadFeedReaders(); });
+    loadFeedReaders();
+  }
   if (page === "almanac") { setupAlmanac(); loadAlmanac(); }
-  if (page === "briefings") { setupBriefings(); loadBriefing(); }
+  if (page === "briefings") {
+    setupBriefings();
+    setupSiteFilter(() => loadBriefing(true));
+    loadBriefing();
+  }
   if (page === "health") loadHealth();
 })();

@@ -121,6 +121,11 @@ def _site(conn: sqlite3.Connection, name: str) -> sqlite3.Row:
     return row
 
 
+def _requested_site(conn: sqlite3.Connection) -> Optional[sqlite3.Row]:
+    name = request.args.get("site", "").strip()
+    return _site(conn, name) if name else None
+
+
 def _metric_column(bots: int, assets: int) -> str:
     if bots and assets:
         return "requests"
@@ -236,6 +241,14 @@ def ai_crawlers():
     families = tuple(AI_AGENTS)
     placeholders = ",".join("?" for _ in families)
     with _conn() as conn:
+        site = _requested_site(conn)
+        site_clause = "AND site_id=?" if site else ""
+        joined_site_clause = "AND p.site_id=?" if site else ""
+        totals_params: tuple[Any, ...] = (start, end, *families)
+        stored_params: tuple[Any, ...] = (start, end, *families)
+        if site:
+            totals_params += (site["id"],)
+            stored_params += (site["id"],)
         totals_row = conn.execute(
             f"""
             SELECT COALESCE(SUM({value}),0) requests,
@@ -246,9 +259,9 @@ def ai_crawlers():
                        sightings
             FROM daily_page_agent
             WHERE day BETWEEN ? AND ? AND ua_family IN ({placeholders})
-              AND is_bot=1 AND {value} > 0
+              AND is_bot=1 AND {value} > 0 {site_clause}
             """,
-            (start, end, *families),
+            totals_params,
         ).fetchone()
         stored = conn.execute(
             f"""
@@ -258,12 +271,13 @@ def ai_crawlers():
             FROM daily_page_agent p JOIN sites s ON s.id=p.site_id
             WHERE p.day BETWEEN ? AND ? AND p.is_bot=1
               AND p.ua_family IN ({placeholders})
+              {joined_site_clause}
             GROUP BY p.site_id, p.ua_family, p.path
             HAVING SUM({value}) > 0
             ORDER BY requests DESC, last_seen DESC, site, agent, path
             LIMIT ?
             """,
-            (start, end, *families, limit),
+            (*stored_params, limit),
         )
         rows = []
         for row in stored:
@@ -278,6 +292,7 @@ def ai_crawlers():
         "sightings": rows,
         "totals": totals,
         "limited": totals_row["sightings"] > len(rows),
+        "scope": {"site": site["name"] if site else None},
     })
 
 
@@ -287,17 +302,22 @@ def feed_readers():
     start, end = _date_range()
     limit = _int_arg("limit", 250, 1, 500)
     with _conn() as conn:
+        site = _requested_site(conn)
+        site_clause = "AND f.site_id=?" if site else ""
+        parameters: tuple[Any, ...] = (start, end)
+        if site:
+            parameters += (site["id"],)
         stored = [
             dict(row)
             for row in conn.execute(
-                """
+                f"""
                 SELECT f.day, s.name site, f.path, f.reader, f.requests,
                        f.reported_subscribers, f.first_seen, f.last_seen
                 FROM daily_feed_reader f JOIN sites s ON s.id=f.site_id
-                WHERE f.day BETWEEN ? AND ?
+                WHERE f.day BETWEEN ? AND ? {site_clause}
                 ORDER BY f.day, f.last_seen
                 """,
-                (start, end),
+                parameters,
             )
         ]
 
@@ -365,6 +385,7 @@ def feed_readers():
         "sightings": rows[:limit],
         "totals": totals,
         "limited": len(rows) > limit,
+        "scope": {"site": site["name"] if site else None},
     })
 
 
@@ -435,50 +456,69 @@ def _week_start_arg(today: date) -> Optional[date]:
 
 
 def _briefing_totals(
-    conn: sqlite3.Connection, start: date, end: date
+    conn: sqlite3.Connection, start: date, end: date,
+    site_id: Optional[int] = None,
 ) -> dict[str, int]:
+    site_clause = "AND site_id=?" if site_id is not None else ""
+    parameters: tuple[Any, ...] = (start.isoformat(), end.isoformat())
+    if site_id is not None:
+        parameters += (site_id,)
     row = conn.execute(
-        """
+        f"""
         SELECT COALESCE(SUM(requests),0) requests,
                COALESCE(SUM(unique_visitors),0) visitor_days,
                COALESCE(SUM(bytes),0) bytes,
                COUNT(DISTINCT CASE WHEN requests>0 THEN site_id END) active_sites
         FROM daily_filter
         WHERE day BETWEEN ? AND ? AND include_bots=0 AND include_assets=0
+          {site_clause}
         """,
-        (start.isoformat(), end.isoformat()),
+        parameters,
     ).fetchone()
     return dict(row)
 
 
 def _briefing_page_totals(
-    conn: sqlite3.Connection, start: date, end: date
+    conn: sqlite3.Connection, start: date, end: date,
+    site_id: Optional[int] = None,
 ) -> dict[tuple[str, str], int]:
+    site_clause = "AND p.site_id=?" if site_id is not None else ""
+    parameters: tuple[Any, ...] = (start.isoformat(), end.isoformat())
+    if site_id is not None:
+        parameters += (site_id,)
     return {
         (row["site"], row["path"]): row["requests"]
         for row in conn.execute(
-            """
+            f"""
             SELECT s.name site, p.path,
                    SUM(p.human_nonasset_requests) requests
             FROM daily_page_status p JOIN sites s ON s.id=p.site_id
             WHERE p.day BETWEEN ? AND ? AND p.status BETWEEN 200 AND 399
+              {site_clause}
             GROUP BY p.site_id, p.path
             HAVING SUM(p.human_nonasset_requests)>0
             """,
-            (start.isoformat(), end.isoformat()),
+            parameters,
         )
     }
 
 
-def _feed_snapshot(conn: sqlite3.Connection, through: date) -> dict[str, int]:
+def _feed_snapshot(
+    conn: sqlite3.Connection, through: date, site_id: Optional[int] = None
+) -> dict[str, int]:
+    site_clause = "AND f.site_id=?" if site_id is not None else ""
+    parameters: tuple[Any, ...] = (through.isoformat(),)
+    if site_id is not None:
+        parameters += (site_id,)
     rows = conn.execute(
-        """
+        f"""
         SELECT s.name site, f.path, f.reader, f.day, f.reported_subscribers
         FROM daily_feed_reader f JOIN sites s ON s.id=f.site_id
         WHERE f.day<=? AND f.reported_subscribers IS NOT NULL
+          {site_clause}
         ORDER BY f.day
         """,
-        (through.isoformat(),),
+        parameters,
     )
     latest: dict[tuple[str, str, str], int] = {}
     for row in rows:
@@ -555,22 +595,26 @@ def briefing():
     today = datetime.now(ZoneInfo(config.server.timezone)).date()
     current_week = today - timedelta(days=today.weekday())
     selected = _week_start_arg(today)
-    if selected is None:
-        with _conn() as conn:
+    with _conn() as conn:
+        site = _requested_site(conn)
+        site_id = site["id"] if site else None
+        if selected is None:
+            site_clause = "AND site_id=?" if site else ""
             latest_completed_day = conn.execute(
-                """
+                f"""
                 SELECT MAX(day) FROM daily_filter
                 WHERE include_bots=0 AND include_assets=0 AND requests>0 AND day<?
+                  {site_clause}
                 """,
-                (current_week.isoformat(),),
+                (current_week.isoformat(), *((site_id,) if site else ())),
             ).fetchone()[0]
-        # Prefer the newest completed briefing. A brand-new installation still
-        # gets an immediately useful in-progress briefing until its first week ends.
-        selected = (
-            date.fromisoformat(latest_completed_day)
-            - timedelta(days=date.fromisoformat(latest_completed_day).weekday())
-            if latest_completed_day else current_week
-        )
+            # Prefer the newest completed briefing. A brand-new installation still
+            # gets an immediately useful in-progress briefing until its first week ends.
+            selected = (
+                date.fromisoformat(latest_completed_day)
+                - timedelta(days=date.fromisoformat(latest_completed_day).weekday())
+                if latest_completed_day else current_week
+            )
     week_end = selected + timedelta(days=6)
     through = min(today, week_end)
     elapsed_days = (through - selected).days
@@ -578,11 +622,14 @@ def briefing():
     prior_end = prior_start + timedelta(days=elapsed_days)
 
     with _conn() as conn:
+        first_site_clause = "AND site_id=?" if site else ""
         first_day = conn.execute(
-            """
+            f"""
             SELECT MIN(day) FROM daily_filter
             WHERE include_bots=0 AND include_assets=0 AND requests>0
-            """
+              {first_site_clause}
+            """,
+            ((site_id,) if site else ()),
         ).fetchone()[0]
         first_week = (
             date.fromisoformat(first_day) - timedelta(days=date.fromisoformat(first_day).weekday())
@@ -598,37 +645,48 @@ def briefing():
             })
             cursor -= timedelta(days=7)
 
-        current = _briefing_totals(conn, selected, through)
-        previous = _briefing_totals(conn, prior_start, prior_end)
+        current = _briefing_totals(conn, selected, through, site_id)
+        previous = _briefing_totals(conn, prior_start, prior_end, site_id)
+        site_where = "WHERE s.id=?" if site else ""
         site_current = {
             row["site"]: dict(row)
             for row in conn.execute(
-                """
+                f"""
                 SELECT s.name site, COALESCE(SUM(f.requests),0) requests,
                        COALESCE(SUM(f.unique_visitors),0) visitor_days
                 FROM sites s LEFT JOIN daily_filter f ON f.site_id=s.id
                   AND f.day BETWEEN ? AND ? AND f.include_bots=0
                   AND f.include_assets=0
+                {site_where}
                 GROUP BY s.id ORDER BY s.name
                 """,
-                (selected.isoformat(), through.isoformat()),
+                (
+                    selected.isoformat(), through.isoformat(),
+                    *((site_id,) if site else ()),
+                ),
             )
         }
         site_previous = {
             row["site"]: row["requests"]
             for row in conn.execute(
-                """
+                f"""
                 SELECT s.name site, COALESCE(SUM(f.requests),0) requests
                 FROM sites s LEFT JOIN daily_filter f ON f.site_id=s.id
                   AND f.day BETWEEN ? AND ? AND f.include_bots=0
                   AND f.include_assets=0
+                {site_where}
                 GROUP BY s.id
                 """,
-                (prior_start.isoformat(), prior_end.isoformat()),
+                (
+                    prior_start.isoformat(), prior_end.isoformat(),
+                    *((site_id,) if site else ()),
+                ),
             )
         }
-        current_pages = _briefing_page_totals(conn, selected, through)
-        previous_pages = _briefing_page_totals(conn, prior_start, prior_end)
+        current_pages = _briefing_page_totals(conn, selected, through, site_id)
+        previous_pages = _briefing_page_totals(
+            conn, prior_start, prior_end, site_id
+        )
         page_changes = [
             {
                 "site": site,
@@ -654,17 +712,22 @@ def briefing():
             key=lambda row: (-abs(row["change"]), -row["requests"], row["site"], row["path"])
         )
 
+        event_site_clause = "AND e.site_id=?" if site else ""
         stored_events = [
             dict(row)
             for row in conn.execute(
-                """
+                f"""
                 SELECT e.kind, e.occurred_at, e.day, e.path, e.source,
                        e.agent, e.country, e.value, s.name site
                 FROM events e JOIN sites s ON s.id=e.site_id
                 WHERE e.day BETWEEN ? AND ?
+                  {event_site_clause}
                 ORDER BY e.occurred_at DESC, e.id DESC
                 """,
-                (selected.isoformat(), through.isoformat()),
+                (
+                    selected.isoformat(), through.isoformat(),
+                    *((site_id,) if site else ()),
+                ),
             )
         ]
         event_counts = defaultdict(int)
@@ -673,6 +736,7 @@ def briefing():
 
         families = tuple(AI_AGENTS)
         placeholders = ",".join("?" for _ in families)
+        ai_site_clause = "AND site_id=?" if site else ""
         ai_row = conn.execute(
             f"""
             SELECT COALESCE(SUM(requests-asset_requests),0) requests,
@@ -681,35 +745,49 @@ def briefing():
             FROM daily_page_agent
             WHERE day BETWEEN ? AND ? AND is_bot=1
               AND ua_family IN ({placeholders})
+              {ai_site_clause}
             """,
-            (selected.isoformat(), through.isoformat(), *families),
+            (
+                selected.isoformat(), through.isoformat(), *families,
+                *((site_id,) if site else ()),
+            ),
         ).fetchone()
         ai = dict(ai_row)
 
+        country_site_clause = "AND site_id=?" if site else ""
         countries = [
             dict(row)
             for row in conn.execute(
-                """
+                f"""
                 SELECT country, SUM(human_nonasset_requests) requests
                 FROM daily_country WHERE day BETWEEN ? AND ?
+                  {country_site_clause}
                 GROUP BY country HAVING SUM(human_nonasset_requests)>0
                 ORDER BY requests DESC, country
                 """,
-                (selected.isoformat(), through.isoformat()),
+                (
+                    selected.isoformat(), through.isoformat(),
+                    *((site_id,) if site else ()),
+                ),
             )
         ]
+        country_history_clause = "AND site_id=?" if site else ""
         new_countries = [
             row["country"] for row in countries
             if conn.execute(
-                """
+                f"""
                 SELECT 1 FROM daily_country
-                WHERE country=? AND day<? AND human_nonasset_requests>0 LIMIT 1
+                WHERE country=? AND day<? AND human_nonasset_requests>0
+                  {country_history_clause} LIMIT 1
                 """,
-                (row["country"], selected.isoformat()),
+                (
+                    row["country"], selected.isoformat(),
+                    *((site_id,) if site else ()),
+                ),
             ).fetchone() is None
         ]
-        feed_current = _feed_snapshot(conn, through)
-        feed_previous = _feed_snapshot(conn, prior_end)
+        feed_current = _feed_snapshot(conn, through, site_id)
+        feed_previous = _feed_snapshot(conn, prior_end, site_id)
 
     summary = {
         **current,
@@ -774,6 +852,7 @@ def briefing():
         "narrative": _briefing_narrative(
             summary, page_changes, discoveries, ai, geography, feeds
         ),
+        "scope": {"site": site["name"] if site else None},
     })
 
 
@@ -1386,18 +1465,23 @@ def live():
     cutoff = generated_at - minutes * 60
     private_placeholders = ",".join("?" for _ in LIVE_PRIVATE_SITES)
     with _conn() as conn:
+        site = _requested_site(conn)
+        aggregate_site_clause = "WHERE s.id=?" if site else ""
+        request_site_clause = "AND r.site_id=?" if site else ""
+        event_site_clause = "AND e.site_id=?" if site else ""
         rows = [
             dict(row)
             for row in conn.execute(
-                """
+                f"""
                 SELECT s.name site, COUNT(r.id) requests,
                        COUNT(DISTINCT r.ip_hash) unique_visitors,
                        COALESCE(SUM(r.bytes),0) bytes
                 FROM sites s LEFT JOIN requests r ON r.site_id=s.id AND r.ts>=?
                   AND (?=1 OR r.is_bot=0) AND (?=1 OR r.is_asset=0)
+                {aggregate_site_clause}
                 GROUP BY s.id ORDER BY requests DESC, s.name
                 """,
-                (cutoff, bots, assets),
+                (cutoff, bots, assets, *((site["id"],) if site else ())),
             )
         ]
         recent = [
@@ -1412,9 +1496,13 @@ def live():
                   AND r.method IN ('GET', 'HEAD')
                   AND r.status BETWEEN 200 AND 399
                   AND s.name NOT IN ({private_placeholders})
+                  {request_site_clause}
                 ORDER BY r.ts DESC, r.id DESC LIMIT ?
                 """,
-                (cutoff, *LIVE_PRIVATE_SITES, limit),
+                (
+                    cutoff, *LIVE_PRIVATE_SITES,
+                    *((site["id"],) if site else ()), limit,
+                ),
             )
         ]
         exact_moments: dict[tuple[int, int, str], list[str]] = defaultdict(list)
@@ -1425,9 +1513,10 @@ def live():
             WHERE e.occurred_at>=? AND e.path IS NOT NULL
               AND e.kind IN ('new_page', 'new_referrer')
               AND s.name NOT IN ({private_placeholders})
+              {event_site_clause}
             ORDER BY e.occurred_at
             """,
-            (cutoff, *LIVE_PRIVATE_SITES),
+            (cutoff, *LIVE_PRIVATE_SITES, *((site["id"],) if site else ())),
         ):
             exact_moments[(row["site_id"], row["occurred_at"], row["path"])].append(
                 row["kind"]
@@ -1445,9 +1534,13 @@ def live():
                       'traffic_record', 'traffic_spike', 'visitor_milestone'
                   )
                   AND s.name NOT IN ({private_placeholders})
+                  {event_site_clause}
                 ORDER BY e.occurred_at, e.id
                 """,
-                (*activity_days, *LIVE_PRIVATE_SITES),
+                (
+                    *activity_days, *LIVE_PRIVATE_SITES,
+                    *((site["id"],) if site else ()),
+                ),
             ):
                 daily_moments[(row["site_id"], row["day"])].append(row["kind"])
         activity = []
@@ -1477,9 +1570,10 @@ def live():
                   AND r.status BETWEEN 200 AND 399
                   AND r.country IS NOT NULL
                   AND s.name NOT IN ({private_placeholders})
+                  {request_site_clause}
                 GROUP BY r.country ORDER BY requests DESC, r.country
                 """,
-                (cutoff, *LIVE_PRIVATE_SITES),
+                (cutoff, *LIVE_PRIVATE_SITES, *((site["id"],) if site else ())),
             )
         ]
         radar_totals = dict(
@@ -1493,8 +1587,9 @@ def live():
                   AND r.method IN ('GET', 'HEAD')
                   AND r.status BETWEEN 200 AND 399
                   AND s.name NOT IN ({private_placeholders})
+                  {request_site_clause}
                 """,
-                (cutoff, *LIVE_PRIVATE_SITES),
+                (cutoff, *LIVE_PRIVATE_SITES, *((site["id"],) if site else ())),
             ).fetchone()
         )
     return jsonify({
@@ -1505,4 +1600,5 @@ def live():
         "totals": radar_totals,
         "generated_at": generated_at,
         "privacy": {"excluded_activity_sites": list(LIVE_PRIVATE_SITES)},
+        "scope": {"site": site["name"] if site else None},
     })

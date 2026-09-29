@@ -37,6 +37,8 @@ log paths, retention, timezone, and log format all live in TOML configuration.
   last sightings, referrers, AI readers, countries, and response codes.
 - Idempotent daily rollups retained after raw request pruning.
 - Authenticated JSON APIs and responsive server-rendered pages.
+- Bookmarkable all-site or single-site scopes across Live Radar, Weekly
+  Briefings, AI Crawlers, Feeds, and the Traffic Almanac.
 - Zero-filled daily charts, automatic hourly charts for retained one-day raw
   data, daily fallback for older dates, and bookmarkable date and traffic
   filters.
@@ -244,6 +246,9 @@ All routes require the admin session except `/api/health`:
 Dates use `YYYY-MM-DD`. Visitor-day totals are sums of daily unique hashes. They
 deliberately do not identify the same visitor across days. Site detail views use
 hourly buckets automatically when a single day is selected.
+Cross-property endpoints accept an optional `site=` query parameter and reject
+unknown sites. Live Radar never returns individual activity or geography for a
+privacy-protected site, even when that site is selected explicitly.
 
 ## Troubleshooting
 

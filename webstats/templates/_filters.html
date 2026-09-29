@@ -6,6 +6,9 @@
     <button data-days="90">90 days</button>
   </div>
   <div class="custom-dates">
+    {% if site_filter %}
+    <label>Site <select id="site-filter"><option value="">All sites</option></select></label>
+    {% endif %}
     <label>From <input id="date-from" type="date"></label>
     <label>To <input id="date-to" type="date"></label>
     <button id="apply-dates">Apply</button>
