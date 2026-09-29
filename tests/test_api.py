@@ -92,6 +92,7 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(self.client.get("/errors").status_code, 200)
         self.assertEqual(self.client.get("/journeys").status_code, 200)
         self.assertEqual(self.client.get("/links").status_code, 200)
+        self.assertEqual(self.client.get("/inbox").status_code, 200)
         self.assertEqual(self.client.get("/feed-readers").status_code, 200)
         self.assertEqual(self.client.get("/ai-crawlers").status_code, 200)
         self.assertEqual(self.client.get("/live").status_code, 200)
@@ -410,6 +411,28 @@ class ApiTests(unittest.TestCase):
             self.client.get("/api/events?site=unknown.example").status_code,
             404,
         )
+        inbox = self.client.get(
+            "/api/inbox?from=2026-09-28&to=2026-09-28"
+        ).get_json()
+        self.assertEqual(inbox["counts"], {
+            "all": 4, "discovery": 3, "readers": 1, "momentum": 0,
+        })
+        self.assertEqual(
+            {item["category"] for item in inbox["events"]},
+            {"discovery", "readers"},
+        )
+        discovery = self.client.get(
+            "/api/inbox?from=2026-09-28&to=2026-09-28"
+            "&site=example.com&category=discovery"
+        ).get_json()
+        self.assertEqual(len(discovery["events"]), 3)
+        self.assertTrue(all(
+            item["category"] == "discovery" for item in discovery["events"]
+        ))
+        self.assertEqual(
+            self.client.get("/api/inbox?category=unknown").status_code,
+            400,
+        )
 
         body = self.client.get(
             "/api/ai-crawlers?from=2026-09-28&to=2026-09-28"
@@ -566,6 +589,11 @@ class ApiTests(unittest.TestCase):
         ).get_json()
         self.assertTrue(private["privacy"]["protected"])
         self.assertEqual(private["sources"], [])
+        private_inbox = self.client.get(
+            "/api/inbox?site=ad-fontes.app"
+        ).get_json()
+        self.assertTrue(private_inbox["privacy"]["protected"])
+        self.assertEqual(private_inbox["events"], [])
         self.assertEqual(
             self.client.get("/api/link-atlas?source=missing.example").status_code,
             404,

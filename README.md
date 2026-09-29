@@ -22,6 +22,10 @@ log paths, retention, timezone, and log format all live in TOML configuration.
   crawler sightings, traffic records and spikes, visitor-day milestones, and
   explicitly reported RSS subscriber milestones. Gold chart markers connect
   each observation to the traffic around it.
+- A dashboard-native Discovery Inbox with browser-local unread state, automatic
+  discovery/reader/momentum grouping, site and date scopes, and direct links to
+  the relevant page story or intelligence view. No external notification
+  service or manual annotation is required.
 - A ten-second Live Radar with a rolling human activity stream, Automatic
   Moment badges, relative timestamps, and a self-contained world pulse map.
   Privacy-sensitive sites remain visible only as anonymous aggregate totals.

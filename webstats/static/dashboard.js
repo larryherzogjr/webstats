@@ -13,6 +13,8 @@
   let briefingWeek = new URLSearchParams(window.location.search).get("week") || "";
   let scopeSite = initialState.site;
   let linkSource = initialState.source;
+  let inboxCategory = initialState.category;
+  let inboxSeenAt = readInboxSeenAt();
   let errorsDays = [7, 30, 90].includes(Number(new URLSearchParams(window.location.search).get("days")))
     ? Number(new URLSearchParams(window.location.search).get("days")) : 30;
 
@@ -47,6 +49,7 @@
       assets: params.get("assets") === "1",
       site: params.get("site") || "",
       source: params.get("source") || "",
+      category: params.get("category") || "",
     };
   }
 
@@ -72,6 +75,7 @@
   function persistentParams() {
     if (page === "page") return { path: document.body.dataset.path };
     if (page === "link-atlas" && linkSource) return { source: linkSource };
+    if (page === "inbox" && inboxCategory) return { category: inboxCategory };
     return {};
   }
 
@@ -143,6 +147,7 @@
       range = state.range;
       scopeSite = state.site;
       if (page === "link-atlas") linkSource = state.source;
+      if (page === "inbox") inboxCategory = state.category;
       from.value = range.from;
       to.value = range.to;
       if (bots) bots.checked = state.bots;
@@ -276,6 +281,41 @@
       content_resurfaced: ["Content resurfaced", `${event.path} returned after a long quiet spell`, "resurfaced"],
     };
     return presentations[event.kind] || ["Automatic moment", event.path || event.site, "other"];
+  }
+
+  function readInboxSeenAt() {
+    try {
+      const stored = Number(window.localStorage.getItem("webstatsInboxSeenAt"));
+      return Number.isFinite(stored) && stored > 0 ? stored : 0;
+    } catch (_error) {
+      return 0;
+    }
+  }
+
+  function writeInboxSeenAt(value) {
+    inboxSeenAt = value;
+    try { window.localStorage.setItem("webstatsInboxSeenAt", String(value)); }
+    catch (_error) { /* Browser storage can be disabled without breaking Inbox. */ }
+  }
+
+  function updateInboxCount(count, limited = false) {
+    const badge = document.querySelector("#inbox-count");
+    if (!badge) return;
+    badge.classList.toggle("hidden", count === 0);
+    badge.textContent = count ? (limited ? `${count}+` : String(count)) : "";
+    badge.setAttribute("aria-label", `${count} unread discoveries`);
+  }
+
+  async function loadInboxBadge() {
+    try {
+      const fallback = defaultRange(7).from;
+      const from = inboxSeenAt ? localDate(new Date(inboxSeenAt * 1000)) : fallback;
+      const data = await api(`/api/inbox?${new URLSearchParams({ from, to: serverToday, limit: "500" })}`);
+      const unread = data.events.filter(item => item.occurred_at > inboxSeenAt).length;
+      updateInboxCount(unread, data.limited);
+    } catch (_error) {
+      updateInboxCount(0);
+    }
   }
 
   function renderEvents(events, selector = "#event-journal") {
@@ -819,6 +859,68 @@
     } catch (error) { showError(error); }
   }
 
+  function inboxHref(event, from, to) {
+    if (event.kind === "new_referrer" && event.source) {
+      return `/links?${new URLSearchParams({
+        from, to, bots: "0", assets: "0", site: event.site,
+        source: event.source,
+      })}`;
+    }
+    if (event.kind === "first_ai_visit") {
+      return `/ai-crawlers?${new URLSearchParams({
+        from, to, bots: "1", assets: "0", site: event.site,
+      })}`;
+    }
+    if (event.kind === "feed_subscriber_milestone") {
+      return `/feed-readers?${new URLSearchParams({
+        from, to, bots: "1", assets: "0", site: event.site,
+      })}`;
+    }
+    if (event.path) return pageStoryHref(event, from, to);
+    return `/site/${encodeURIComponent(event.site)}?${new URLSearchParams({
+      from, to, bots: "0", assets: "0",
+    })}`;
+  }
+
+  async function loadInbox() {
+    clearError();
+    const previousSeenAt = inboxSeenAt;
+    try {
+      const data = await api(`/api/inbox?${query({ limit: 500 })}`);
+      document.querySelector("#range-label").textContent = dateLabel(data.from, data.to);
+      const privacy = document.querySelector("#inbox-privacy");
+      privacy.classList.toggle("hidden", !data.privacy.protected);
+      privacy.textContent = data.privacy.protected
+        ? `${data.scope.site} is privacy-protected. Discovery Inbox does not expose its page-level moments.`
+        : "";
+      const category = document.querySelector("#inbox-category");
+      category.value = inboxCategory;
+      document.querySelector("#inbox-metrics").innerHTML = [
+        metric("All moments", fmt.format(data.counts.all)),
+        metric("Discoveries", fmt.format(data.counts.discovery)),
+        metric("Readers", fmt.format(data.counts.readers)),
+        metric("Momentum", fmt.format(data.counts.momentum)),
+      ].join("");
+      const unread = data.events.filter(item => item.occurred_at > previousSeenAt).length;
+      document.querySelector("#inbox-heading").textContent = inboxCategory
+        ? `${category.options[category.selectedIndex].text} in this range`
+        : "What changed";
+      document.querySelector("#inbox-unread-label").textContent = previousSeenAt
+        ? `${fmt.format(unread)} new since your last visit`
+        : `${fmt.format(unread)} recent moments`;
+      const target = document.querySelector("#inbox-events");
+      target.innerHTML = data.events.length ? data.events.map(event => {
+        const [label, detail, presentation] = eventPresentation(event);
+        const unreadClass = event.occurred_at > previousSeenAt ? " unread" : "";
+        const href = inboxHref(event, data.from, data.to);
+        const country = event.country ? ` · ${countryFlag(event.country)} ${event.country}` : "";
+        return `<li class="inbox-event${unreadClass}"><span class="event-marker ${escapeHtml(presentation)}"></span><div class="inbox-event-copy"><div class="inbox-event-top"><span class="inbox-category ${escapeHtml(event.category)}">${escapeHtml(event.category)}</span><time datetime="${escapeHtml(new Date(event.occurred_at * 1000).toISOString())}">${escapeHtml(new Date(event.occurred_at * 1000).toLocaleString())}</time></div><a href="${escapeHtml(href)}">${escapeHtml(label)}</a><p>${escapeHtml(detail)}</p><small>${escapeHtml(event.site)}${escapeHtml(country)}</small></div></li>`;
+      }).join("") : '<li class="empty">Nothing landed in this category and date range.</li>';
+      if (data.to === serverToday) writeInboxSeenAt(data.generated_at);
+      updateInboxCount(0);
+    } catch (error) { showError(error); }
+  }
+
   const countryPoints = {
     AD: [1.6, 42.5], AE: [54.4, 24.4], AF: [67.7, 33.9], AL: [20.2, 41.2],
     AR: [-64, -34], AT: [14.6, 47.5], AU: [134, -25], AZ: [47.6, 40.1],
@@ -1226,6 +1328,18 @@
       loadLinkAtlas();
     });
     loadLinkAtlas();
+  }
+  if (page === "inbox") {
+    setupFilters(loadInbox);
+    setupSiteFilter(() => { syncUrl(); loadInbox(); });
+    document.querySelector("#inbox-category")?.addEventListener("change", event => {
+      inboxCategory = event.target.value;
+      syncUrl();
+      loadInbox();
+    });
+    loadInbox();
+  } else {
+    loadInboxBadge();
   }
   if (page === "health") loadHealth();
 })();

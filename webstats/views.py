@@ -125,6 +125,15 @@ def links():
     )
 
 
+@views_bp.get("/inbox")
+@login_required
+def inbox():
+    return render_template(
+        "inbox.html", server_today=_server_today(), force_bots=True,
+        hide_assets=True, site_filter=True,
+    )
+
+
 @views_bp.get("/health")
 @login_required
 def health():

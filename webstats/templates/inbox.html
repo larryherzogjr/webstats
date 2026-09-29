@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+{% block title %}Discovery Inbox | Webstats{% endblock %}
+{% block page_id %}inbox{% endblock %}
+{% block content %}
+<div class="page-heading">
+  <div><p class="eyebrow">Since you last looked</p><h1>Discovery Inbox</h1></div>
+  <p id="range-label" class="range-label"></p>
+</div>
+{% include "_filters.html" %}
+<section class="filters compact inbox-category-filter" aria-label="Inbox category filter">
+  <div class="custom-dates">
+    <label>Category
+      <select id="inbox-category">
+        <option value="">Everything</option>
+        <option value="discovery">Discoveries</option>
+        <option value="readers">Readers</option>
+        <option value="momentum">Momentum</option>
+      </select>
+    </label>
+  </div>
+</section>
+<div id="page-error" class="alert hidden" role="alert"></div>
+<div id="inbox-privacy" class="alert hidden" role="status"></div>
+<section id="inbox-metrics" class="metric-grid" aria-label="Inbox summary"></section>
+<section class="panel inbox-hero">
+  <div class="panel-heading">
+    <div><p class="eyebrow">Automatic observations</p><h2 id="inbox-heading">What changed</h2></div>
+    <span id="inbox-unread-label" class="legend-note"></span>
+  </div>
+  <ol id="inbox-events" class="inbox-events" aria-live="polite"></ol>
+</section>
+<p class="muted methodology-note">The unread marker is stored only in this browser and is updated when this page loads successfully. Inbox entries come from permanent aggregate moments; privacy-protected sites and individual visitor activity are excluded.</p>
+{% endblock %}

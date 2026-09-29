@@ -16,6 +16,7 @@
     </a>
     <nav aria-label="Primary navigation">
       <a href="{{ url_for('views.overview') }}">Overview</a>
+      <a class="inbox-nav-link" href="{{ url_for('views.inbox') }}">Inbox<span id="inbox-count" class="nav-count hidden"></span></a>
       <a href="{{ url_for('views.briefings') }}">Briefings</a>
       <a href="{{ url_for('views.pulse') }}">Pulse</a>
       <a href="{{ url_for('views.errors') }}">Errors</a>

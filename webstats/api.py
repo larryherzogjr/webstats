@@ -300,6 +300,87 @@ def events():
     })
 
 
+INBOX_CATEGORIES = {
+    "discovery": {"new_page", "new_referrer", "content_resurfaced"},
+    "readers": {"first_ai_visit", "feed_subscriber_milestone"},
+    "momentum": {"traffic_record", "traffic_spike", "visitor_milestone"},
+}
+
+
+@api_bp.get("/inbox")
+@login_required
+def inbox():
+    start, end = _date_range()
+    limit = _int_arg("limit", 250, 1, 500)
+    category = request.args.get("category", "").strip().lower()
+    if category and category not in INBOX_CATEGORIES:
+        raise ApiError("Unknown inbox category")
+    generated_at = int(datetime.now(timezone.utc).timestamp())
+    private_placeholders = ",".join(
+        "?" for _ in INDIVIDUAL_ACTIVITY_PRIVATE_SITES
+    )
+    with _conn() as conn:
+        site = _requested_site(conn)
+        if site and site["name"] in INDIVIDUAL_ACTIVITY_PRIVATE_SITES:
+            return jsonify({
+                "scope": {"site": site["name"], "category": category or None},
+                "from": start, "to": end, "generated_at": generated_at,
+                "privacy": {
+                    "protected": True,
+                    "excluded_sites": list(INDIVIDUAL_ACTIVITY_PRIVATE_SITES),
+                },
+                "counts": {"all": 0, **{
+                    name: 0 for name in INBOX_CATEGORIES
+                }},
+                "events": [], "limited": False,
+            })
+        site_clause = "AND e.site_id=?" if site else ""
+        parameters: tuple[Any, ...] = (
+            start, end, *INDIVIDUAL_ACTIVITY_PRIVATE_SITES,
+            *((site["id"],) if site else ()),
+        )
+        rows = [
+            dict(row)
+            for row in conn.execute(
+                f"""
+                SELECT e.event_key key, e.kind, e.occurred_at, e.day,
+                       e.path, e.source, e.agent, e.country, e.value,
+                       s.name site
+                FROM events e JOIN sites s ON s.id=e.site_id
+                WHERE e.day BETWEEN ? AND ?
+                  AND s.name NOT IN ({private_placeholders}) {site_clause}
+                ORDER BY e.occurred_at DESC, e.id DESC
+                """,
+                parameters,
+            )
+        ]
+    for row in rows:
+        row["category"] = next(
+            (name for name, kinds in INBOX_CATEGORIES.items()
+             if row["kind"] in kinds),
+            "other",
+        )
+    counts = {name: 0 for name in INBOX_CATEGORIES}
+    for row in rows:
+        if row["category"] in counts:
+            counts[row["category"]] += 1
+    selected = [
+        row for row in rows if not category or row["category"] == category
+    ]
+    return jsonify({
+        "scope": {"site": site["name"] if site else None,
+                  "category": category or None},
+        "from": start, "to": end, "generated_at": generated_at,
+        "privacy": {
+            "protected": False,
+            "excluded_sites": list(INDIVIDUAL_ACTIVITY_PRIVATE_SITES),
+        },
+        "counts": {"all": len(rows), **counts},
+        "events": selected[:limit],
+        "limited": len(selected) > limit,
+    })
+
+
 @api_bp.get("/ai-crawlers")
 @login_required
 def ai_crawlers():
