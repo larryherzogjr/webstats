@@ -412,6 +412,371 @@ def _best_period(totals: dict[str, dict[str, int]]) -> Optional[dict[str, Any]]:
     return {"period": period, **values}
 
 
+def _percent_change(current: int, previous: int) -> Optional[float]:
+    if previous == 0:
+        return None
+    return round(100 * (current - previous) / previous, 1)
+
+
+def _week_start_arg(today: date) -> Optional[date]:
+    current_week = today - timedelta(days=today.weekday())
+    value = request.args.get("week", "").strip()
+    if not value:
+        return None
+    try:
+        selected = date.fromisoformat(value)
+    except ValueError:
+        raise ApiError("week must use YYYY-MM-DD")
+    if selected.weekday() != 0:
+        raise ApiError("week must be a Monday")
+    if selected > current_week:
+        raise ApiError("week must not be in the future")
+    return selected
+
+
+def _briefing_totals(
+    conn: sqlite3.Connection, start: date, end: date
+) -> dict[str, int]:
+    row = conn.execute(
+        """
+        SELECT COALESCE(SUM(requests),0) requests,
+               COALESCE(SUM(unique_visitors),0) visitor_days,
+               COALESCE(SUM(bytes),0) bytes,
+               COUNT(DISTINCT CASE WHEN requests>0 THEN site_id END) active_sites
+        FROM daily_filter
+        WHERE day BETWEEN ? AND ? AND include_bots=0 AND include_assets=0
+        """,
+        (start.isoformat(), end.isoformat()),
+    ).fetchone()
+    return dict(row)
+
+
+def _briefing_page_totals(
+    conn: sqlite3.Connection, start: date, end: date
+) -> dict[tuple[str, str], int]:
+    return {
+        (row["site"], row["path"]): row["requests"]
+        for row in conn.execute(
+            """
+            SELECT s.name site, p.path,
+                   SUM(p.human_nonasset_requests) requests
+            FROM daily_page_status p JOIN sites s ON s.id=p.site_id
+            WHERE p.day BETWEEN ? AND ? AND p.status BETWEEN 200 AND 399
+            GROUP BY p.site_id, p.path
+            HAVING SUM(p.human_nonasset_requests)>0
+            """,
+            (start.isoformat(), end.isoformat()),
+        )
+    }
+
+
+def _feed_snapshot(conn: sqlite3.Connection, through: date) -> dict[str, int]:
+    rows = conn.execute(
+        """
+        SELECT s.name site, f.path, f.reader, f.day, f.reported_subscribers
+        FROM daily_feed_reader f JOIN sites s ON s.id=f.site_id
+        WHERE f.day<=? AND f.reported_subscribers IS NOT NULL
+        ORDER BY f.day
+        """,
+        (through.isoformat(),),
+    )
+    latest: dict[tuple[str, str, str], int] = {}
+    for row in rows:
+        latest[(row["site"], row["path"], row["reader"])] = row[
+            "reported_subscribers"
+        ]
+    return {
+        "reported_subscribers": sum(latest.values()),
+        "reporting_feeds": len(latest),
+    }
+
+
+def _briefing_narrative(
+    summary: dict[str, Any], pages: list[dict[str, Any]], discoveries: dict[str, Any],
+    ai: dict[str, Any], geography: dict[str, Any], feeds: dict[str, Any],
+) -> list[str]:
+    requests = summary["requests"]
+    previous = summary["previous_requests"]
+    change = summary["request_change_percent"]
+    lines = []
+    if previous == 0:
+        lines.append(
+            f"The week recorded {requests:,} human page request{'s' if requests != 1 else ''}; "
+            "there is no comparable traffic in the prior week."
+        )
+    elif requests == previous:
+        lines.append(f"Traffic held steady at {requests:,} human page requests.")
+    else:
+        direction = "rose" if requests > previous else "fell"
+        lines.append(
+            f"Human page traffic {direction} {abs(change):g}% to {requests:,} requests, "
+            f"from {previous:,} in the comparable prior period."
+        )
+    gainers = [page for page in pages if page["change"] > 0]
+    if gainers:
+        leader = max(gainers, key=lambda page: page["change"])
+        lines.append(
+            f"{leader['site']}{leader['path']} gained the most attention, adding "
+            f"{leader['change']:,} requests."
+        )
+    if discoveries["pages"] or discoveries["referrers"]:
+        parts = []
+        if discoveries["pages"]:
+            parts.append(f"{discoveries['pages']} new page{'s' if discoveries['pages'] != 1 else ''}")
+        if discoveries["referrers"]:
+            parts.append(
+                f"{discoveries['referrers']} new referrer{'s' if discoveries['referrers'] != 1 else ''}"
+            )
+        lines.append("Webstats discovered " + " and ".join(parts) + ".")
+    if ai["requests"]:
+        lines.append(
+            f"Recognized AI crawlers made {ai['requests']:,} page requests across "
+            f"{ai['pages']:,} page{'s' if ai['pages'] != 1 else ''}."
+        )
+    if geography["new_countries"]:
+        lines.append(
+            "First-time traffic arrived from "
+            + ", ".join(geography["new_countries"][:5])
+            + (" and elsewhere." if len(geography["new_countries"]) > 5 else ".")
+        )
+    if feeds["change"]:
+        direction = "grew" if feeds["change"] > 0 else "declined"
+        lines.append(
+            f"Reported feed subscriptions {direction} by {abs(feeds['change']):,} "
+            f"to {feeds['reported_subscribers']:,}."
+        )
+    return lines
+
+
+@api_bp.get("/briefing")
+@login_required
+def briefing():
+    config = current_app.config["WEBSTATS_CONFIG"]
+    today = datetime.now(ZoneInfo(config.server.timezone)).date()
+    current_week = today - timedelta(days=today.weekday())
+    selected = _week_start_arg(today)
+    if selected is None:
+        with _conn() as conn:
+            latest_completed_day = conn.execute(
+                """
+                SELECT MAX(day) FROM daily_filter
+                WHERE include_bots=0 AND include_assets=0 AND requests>0 AND day<?
+                """,
+                (current_week.isoformat(),),
+            ).fetchone()[0]
+        # Prefer the newest completed briefing. A brand-new installation still
+        # gets an immediately useful in-progress briefing until its first week ends.
+        selected = (
+            date.fromisoformat(latest_completed_day)
+            - timedelta(days=date.fromisoformat(latest_completed_day).weekday())
+            if latest_completed_day else current_week
+        )
+    week_end = selected + timedelta(days=6)
+    through = min(today, week_end)
+    elapsed_days = (through - selected).days
+    prior_start = selected - timedelta(days=7)
+    prior_end = prior_start + timedelta(days=elapsed_days)
+
+    with _conn() as conn:
+        first_day = conn.execute(
+            """
+            SELECT MIN(day) FROM daily_filter
+            WHERE include_bots=0 AND include_assets=0 AND requests>0
+            """
+        ).fetchone()[0]
+        first_week = (
+            date.fromisoformat(first_day) - timedelta(days=date.fromisoformat(first_day).weekday())
+            if first_day else selected
+        )
+        available_weeks = []
+        cursor = today - timedelta(days=today.weekday())
+        while cursor >= first_week:
+            available_weeks.append({
+                "week": cursor.isoformat(),
+                "to": (cursor + timedelta(days=6)).isoformat(),
+                "complete": cursor + timedelta(days=6) < today,
+            })
+            cursor -= timedelta(days=7)
+
+        current = _briefing_totals(conn, selected, through)
+        previous = _briefing_totals(conn, prior_start, prior_end)
+        site_current = {
+            row["site"]: dict(row)
+            for row in conn.execute(
+                """
+                SELECT s.name site, COALESCE(SUM(f.requests),0) requests,
+                       COALESCE(SUM(f.unique_visitors),0) visitor_days
+                FROM sites s LEFT JOIN daily_filter f ON f.site_id=s.id
+                  AND f.day BETWEEN ? AND ? AND f.include_bots=0
+                  AND f.include_assets=0
+                GROUP BY s.id ORDER BY s.name
+                """,
+                (selected.isoformat(), through.isoformat()),
+            )
+        }
+        site_previous = {
+            row["site"]: row["requests"]
+            for row in conn.execute(
+                """
+                SELECT s.name site, COALESCE(SUM(f.requests),0) requests
+                FROM sites s LEFT JOIN daily_filter f ON f.site_id=s.id
+                  AND f.day BETWEEN ? AND ? AND f.include_bots=0
+                  AND f.include_assets=0
+                GROUP BY s.id
+                """,
+                (prior_start.isoformat(), prior_end.isoformat()),
+            )
+        }
+        current_pages = _briefing_page_totals(conn, selected, through)
+        previous_pages = _briefing_page_totals(conn, prior_start, prior_end)
+        page_changes = [
+            {
+                "site": site,
+                "path": path,
+                "requests": requests,
+                "previous_requests": previous_pages.get((site, path), 0),
+                "change": requests - previous_pages.get((site, path), 0),
+            }
+            for (site, path), requests in current_pages.items()
+        ]
+        page_changes.extend(
+            {
+                "site": site,
+                "path": path,
+                "requests": 0,
+                "previous_requests": requests,
+                "change": -requests,
+            }
+            for (site, path), requests in previous_pages.items()
+            if (site, path) not in current_pages
+        )
+        page_changes.sort(
+            key=lambda row: (-abs(row["change"]), -row["requests"], row["site"], row["path"])
+        )
+
+        stored_events = [
+            dict(row)
+            for row in conn.execute(
+                """
+                SELECT e.kind, e.occurred_at, e.day, e.path, e.source,
+                       e.agent, e.country, e.value, s.name site
+                FROM events e JOIN sites s ON s.id=e.site_id
+                WHERE e.day BETWEEN ? AND ?
+                ORDER BY e.occurred_at DESC, e.id DESC
+                """,
+                (selected.isoformat(), through.isoformat()),
+            )
+        ]
+        event_counts = defaultdict(int)
+        for item in stored_events:
+            event_counts[item["kind"]] += 1
+
+        families = tuple(AI_AGENTS)
+        placeholders = ",".join("?" for _ in families)
+        ai_row = conn.execute(
+            f"""
+            SELECT COALESCE(SUM(requests-asset_requests),0) requests,
+                   COUNT(DISTINCT ua_family) agents,
+                   COUNT(DISTINCT site_id || char(0) || path) pages
+            FROM daily_page_agent
+            WHERE day BETWEEN ? AND ? AND is_bot=1
+              AND ua_family IN ({placeholders})
+            """,
+            (selected.isoformat(), through.isoformat(), *families),
+        ).fetchone()
+        ai = dict(ai_row)
+
+        countries = [
+            dict(row)
+            for row in conn.execute(
+                """
+                SELECT country, SUM(human_nonasset_requests) requests
+                FROM daily_country WHERE day BETWEEN ? AND ?
+                GROUP BY country HAVING SUM(human_nonasset_requests)>0
+                ORDER BY requests DESC, country
+                """,
+                (selected.isoformat(), through.isoformat()),
+            )
+        ]
+        new_countries = [
+            row["country"] for row in countries
+            if conn.execute(
+                """
+                SELECT 1 FROM daily_country
+                WHERE country=? AND day<? AND human_nonasset_requests>0 LIMIT 1
+                """,
+                (row["country"], selected.isoformat()),
+            ).fetchone() is None
+        ]
+        feed_current = _feed_snapshot(conn, through)
+        feed_previous = _feed_snapshot(conn, prior_end)
+
+    summary = {
+        **current,
+        "previous_requests": previous["requests"],
+        "previous_visitor_days": previous["visitor_days"],
+        "request_change_percent": _percent_change(
+            current["requests"], previous["requests"]
+        ),
+        "visitor_change_percent": _percent_change(
+            current["visitor_days"], previous["visitor_days"]
+        ),
+    }
+    sites = [
+        {
+            **row,
+            "previous_requests": site_previous.get(name, 0),
+            "change": row["requests"] - site_previous.get(name, 0),
+            "change_percent": _percent_change(
+                row["requests"], site_previous.get(name, 0)
+            ),
+        }
+        for name, row in site_current.items()
+    ]
+    sites.sort(key=lambda row: (-row["requests"], row["site"]))
+    discoveries = {
+        "pages": event_counts["new_page"],
+        "referrers": event_counts["new_referrer"],
+    }
+    geography = {
+        "countries": len(countries),
+        "new_countries": new_countries,
+        "top": countries[:10],
+    }
+    feeds = {
+        **feed_current,
+        "previous_reported_subscribers": feed_previous["reported_subscribers"],
+        "change": (
+            feed_current["reported_subscribers"]
+            - feed_previous["reported_subscribers"]
+        ),
+    }
+    return jsonify({
+        "week": {
+            "from": selected.isoformat(),
+            "to": through.isoformat(),
+            "scheduled_to": week_end.isoformat(),
+            "complete": week_end < today,
+            "days_compared": elapsed_days + 1,
+            "previous_from": prior_start.isoformat(),
+            "previous_to": prior_end.isoformat(),
+        },
+        "available_weeks": available_weeks,
+        "summary": summary,
+        "sites": sites,
+        "page_changes": page_changes[:12],
+        "discoveries": discoveries,
+        "ai": ai,
+        "geography": geography,
+        "feeds": feeds,
+        "moments": stored_events[:30],
+        "moment_counts": dict(event_counts),
+        "narrative": _briefing_narrative(
+            summary, page_changes, discoveries, ai, geography, feeds
+        ),
+    })
+
+
 @api_bp.get("/almanac")
 @login_required
 def almanac():

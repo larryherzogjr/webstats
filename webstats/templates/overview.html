@@ -14,6 +14,13 @@
   <div class="chart-wrap"><canvas id="overview-chart"></canvas></div>
 </section>
 <section class="metric-grid" id="server-metrics" aria-label="Server-wide metrics"></section>
+<section class="panel briefing-preview">
+  <div class="panel-heading">
+    <div><p class="eyebrow">Weekly briefing</p><h2 id="briefing-preview-heading">What changed</h2></div>
+    <a class="text-link" href="{{ url_for('views.briefings') }}">Read the full briefing</a>
+  </div>
+  <div id="briefing-preview" class="briefing-prose" aria-live="polite"></div>
+</section>
 <section class="panel">
   <div class="panel-heading">
     <div><p class="eyebrow">Automatic observations</p><h2>What happened</h2></div>

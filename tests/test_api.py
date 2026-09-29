@@ -86,6 +86,7 @@ class ApiTests(unittest.TestCase):
         self.assertIn("/one", page.get_data(as_text=True))
         self.assertEqual(self.client.get("/site/example.com/page").status_code, 400)
         self.assertEqual(self.client.get("/almanac").status_code, 200)
+        self.assertEqual(self.client.get("/briefings").status_code, 200)
         self.assertEqual(self.client.get("/feed-readers").status_code, 200)
         self.assertEqual(self.client.get("/ai-crawlers").status_code, 200)
         self.assertEqual(self.client.get("/live").status_code, 200)
@@ -569,6 +570,116 @@ class ApiTests(unittest.TestCase):
                 "/api/almanac?year=2026"
             ).get_json()
         self.assertEqual(through_yesterday["records"]["current"], 3)
+
+    def test_weekly_briefing_compares_matching_days_and_archives_weeks(self):
+        with connect(self.config.storage.db_path) as conn:
+            site_id = site_id_map(conn)["example.com"]
+            conn.execute(
+                """
+                INSERT INTO daily_filter(
+                    site_id, day, include_bots, include_assets, requests,
+                    unique_visitors, bytes, status_2xx, status_3xx,
+                    status_4xx, status_5xx
+                ) VALUES (?, '2026-09-21', 0, 0, 5, 4, 500, 5, 0, 0, 0)
+                """,
+                (site_id,),
+            )
+            conn.executemany(
+                """
+                INSERT INTO daily_page_status(
+                    site_id, day, path, status, requests, human_requests,
+                    nonasset_requests, human_nonasset_requests
+                ) VALUES (?, ?, ?, 200, ?, ?, ?, ?)
+                """,
+                (
+                    (site_id, "2026-09-21", "/one", 1, 1, 1, 1),
+                    (site_id, "2026-09-21", "/old", 2, 2, 2, 2),
+                ),
+            )
+            conn.execute(
+                """
+                INSERT INTO daily_page_agent(
+                    site_id, day, path, ua_family, is_bot, requests, asset_requests
+                ) VALUES (?, '2026-09-28', '/one', 'GPTBot', 1, 3, 0)
+                """,
+                (site_id,),
+            )
+            conn.execute(
+                """
+                INSERT INTO daily_country(
+                    site_id, day, country, requests, human_requests,
+                    nonasset_requests, human_nonasset_requests
+                ) VALUES (?, '2026-09-28', 'US', 1, 1, 1, 1)
+                """,
+                (site_id,),
+            )
+            conn.executemany(
+                """
+                INSERT INTO daily_feed_reader(
+                    site_id, day, path, reader, requests,
+                    reported_subscribers, first_seen, last_seen
+                ) VALUES (?, ?, '/feed.xml', 'Inoreader', 1, ?, 1, 1)
+                """,
+                (
+                    (site_id, "2026-09-21", 3),
+                    (site_id, "2026-09-28", 5),
+                ),
+            )
+            conn.execute(
+                """
+                INSERT INTO events(
+                    site_id, kind, event_key, occurred_at, day, path
+                ) VALUES (?, 'new_page', 'briefing-new-page', 1790600000,
+                          '2026-09-28', '/new')
+                """,
+                (site_id,),
+            )
+            conn.commit()
+        self.authenticate()
+
+        with patch("webstats.api.datetime", wraps=datetime) as clock:
+            clock.now.return_value = datetime(
+                2026, 9, 29, 12, tzinfo=ZoneInfo("America/Chicago")
+            )
+            default = self.client.get("/api/briefing")
+            response = self.client.get("/api/briefing?week=2026-09-28")
+            archived = self.client.get("/api/briefing?week=2026-09-21")
+            invalid = self.client.get("/api/briefing?week=2026-09-22")
+            future = self.client.get("/api/briefing?week=2026-10-05")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(default.get_json()["week"]["from"], "2026-09-21")
+        body = response.get_json()
+        self.assertEqual(
+            body["week"],
+            {
+                "from": "2026-09-28",
+                "to": "2026-09-29",
+                "scheduled_to": "2026-10-04",
+                "complete": False,
+                "days_compared": 2,
+                "previous_from": "2026-09-21",
+                "previous_to": "2026-09-22",
+            },
+        )
+        self.assertEqual(body["summary"]["requests"], 2)
+        self.assertEqual(body["summary"]["previous_requests"], 5)
+        self.assertEqual(body["summary"]["request_change_percent"], -60.0)
+        self.assertEqual(body["discoveries"]["pages"], 2)
+        self.assertEqual(body["ai"], {"requests": 3, "agents": 1, "pages": 1})
+        self.assertEqual(body["geography"]["new_countries"], ["US"])
+        self.assertEqual(body["feeds"]["reported_subscribers"], 5)
+        self.assertEqual(body["feeds"]["change"], 2)
+        self.assertEqual(
+            [week["week"] for week in body["available_weeks"]],
+            ["2026-09-28", "2026-09-21"],
+        )
+        old_page = next(row for row in body["page_changes"] if row["path"] == "/old")
+        self.assertEqual(old_page["change"], -2)
+        self.assertTrue(body["narrative"])
+        self.assertTrue(archived.get_json()["week"]["complete"])
+        self.assertEqual(invalid.status_code, 400)
+        self.assertEqual(future.status_code, 400)
 
     def test_invalid_range_is_rejected(self):
         self.authenticate()

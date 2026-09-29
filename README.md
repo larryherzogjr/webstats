@@ -30,6 +30,9 @@ log paths, retention, timezone, and log format all live in TOML configuration.
   visible without inventing subscriber counts from fetch frequency.
 - A Traffic Almanac with site and server-wide year heatmaps, all-time records,
   active-day streaks, record-breaking days, and visitor-day milestones.
+- Automatic Weekly Briefings that compare like-for-like periods, explain the
+  largest changes in plain language, collect discoveries and unusual moments,
+  and provide a migration-free archive generated from permanent rollups.
 - Clickable per-page stories with permanent daily history, lifetime first and
   last sightings, referrers, AI readers, countries, and response codes.
 - Idempotent daily rollups retained after raw request pruning.
@@ -234,6 +237,7 @@ All routes require the admin session except `/api/health`:
 - `GET /api/events?from=&to=&site=&limit=`, `/ai-crawlers`
 - `GET /api/feed-readers`
 - `GET /api/almanac?year=&site=&bots=0&assets=0`
+- `GET /api/briefing?week=YYYY-MM-DD` (the week must begin on Monday)
 - `GET /api/live?minutes=60&limit=40`
 - `GET /api/health`
 

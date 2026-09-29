@@ -1,0 +1,48 @@
+{% extends "base.html" %}
+{% block title %}Weekly Briefings | Webstats{% endblock %}
+{% block page_id %}briefings{% endblock %}
+{% block content %}
+<div class="page-heading">
+  <div><p class="eyebrow">The week in context</p><h1>Weekly Briefing</h1></div>
+  <p id="briefing-range" class="range-label"></p>
+</div>
+<section class="filters briefing-controls" aria-label="Briefing archive">
+  <div class="custom-dates">
+    <label>Week <select id="briefing-week"></select></label>
+    <button id="apply-briefing">Open briefing</button>
+  </div>
+  <span id="briefing-status" class="status-badge"></span>
+</section>
+<div id="page-error" class="alert hidden" role="alert"></div>
+<section class="panel briefing-hero">
+  <div class="panel-heading">
+    <div><p class="eyebrow">What changed?</p><h2>In plain language</h2></div>
+    <span class="legend-note">Humans and pages only · compared fairly</span>
+  </div>
+  <div id="briefing-narrative" class="briefing-prose" aria-live="polite"></div>
+</section>
+<section id="briefing-metrics" class="metric-grid" aria-label="Weekly totals"></section>
+<div class="detail-grid briefing-grid">
+  <section class="panel">
+    <div class="panel-heading"><div><p class="eyebrow">Property pulse</p><h2>Sites</h2></div></div>
+    <div class="table-wrap"><table><thead><tr><th>Site</th><th>Requests</th><th>Change</th></tr></thead><tbody id="briefing-sites"></tbody></table></div>
+  </section>
+  <section class="panel">
+    <div class="panel-heading"><div><p class="eyebrow">Momentum</p><h2>Pages moving</h2></div></div>
+    <div class="table-wrap"><table><thead><tr><th>Page</th><th>Requests</th><th>Change</th></tr></thead><tbody id="briefing-pages"></tbody></table></div>
+  </section>
+  <section class="panel">
+    <div class="panel-heading"><div><p class="eyebrow">Discovery</p><h2>New arrivals</h2></div></div>
+    <div id="briefing-discoveries" class="briefing-facts"></div>
+  </section>
+  <section class="panel">
+    <div class="panel-heading"><div><p class="eyebrow">The wider web</p><h2>AI, feeds & geography</h2></div></div>
+    <div id="briefing-signals" class="briefing-facts"></div>
+  </section>
+  <section class="panel span-two">
+    <div class="panel-heading"><div><p class="eyebrow">Notable moments</p><h2>Week timeline</h2></div></div>
+    <ol id="briefing-moments" class="event-journal" aria-live="polite"></ol>
+  </section>
+</div>
+<p class="muted methodology-note">Briefings are generated locally from permanent daily rollups. In-progress weeks compare only elapsed days with the same days of the prior week; completed briefings cover Monday through Sunday.</p>
+{% endblock %}

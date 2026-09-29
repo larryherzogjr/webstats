@@ -87,6 +87,12 @@ def almanac():
     return render_template("almanac.html", server_today=_server_today())
 
 
+@views_bp.get("/briefings")
+@login_required
+def briefings():
+    return render_template("briefings.html", server_today=_server_today())
+
+
 @views_bp.get("/health")
 @login_required
 def health():

@@ -109,6 +109,22 @@ td:first-child { max-width: 480px; overflow-wrap: anywhere; }
 .status-badge.degraded { color: var(--warning); border-color: rgba(245, 198, 107, .4); }
 footer { color: #60748e; text-align: center; padding: 0 20px 40px; font-size: 11px; }
 .methodology-note { max-width: 920px; margin: 20px auto 0; text-align: center; font-size: 12px; line-height: 1.6; }
+.briefing-controls .custom-dates label { min-width: 300px; }
+.briefing-controls select { display: block; width: 100%; margin-top: 4px; }
+.briefing-preview { border-color: rgba(110, 231, 199, .24); }
+.briefing-hero { position: relative; overflow: hidden; border-color: rgba(110, 231, 199, .3); }
+.briefing-hero::after { content: ""; position: absolute; width: 280px; height: 280px; right: -130px; top: -160px; border-radius: 50%; background: radial-gradient(circle, rgba(110, 231, 199, .13), transparent 68%); pointer-events: none; }
+.briefing-prose { max-width: 920px; }
+.briefing-prose p { color: var(--muted); margin: 0 0 10px; font-size: 14px; line-height: 1.65; }
+.briefing-prose p:last-child { margin-bottom: 0; }
+.briefing-prose .lead { color: var(--text); font-size: clamp(18px, 2vw, 23px); line-height: 1.45; letter-spacing: -.015em; }
+.briefing-grid { align-items: start; }
+.briefing-facts { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+.briefing-facts article { min-width: 0; padding: 15px; border: 1px solid rgba(143, 162, 186, .14); border-radius: 12px; background: rgba(8, 16, 29, .28); }
+.briefing-facts strong, .briefing-facts span, .briefing-facts small { display: block; overflow-wrap: anywhere; }
+.briefing-facts strong { font-size: 23px; }
+.briefing-facts span { margin-top: 6px; color: var(--text); font-size: 12px; }
+.briefing-facts small { margin-top: 8px; color: var(--muted); font-size: 10px; line-height: 1.45; }
 .almanac-controls .custom-dates label { min-width: 180px; }
 .almanac-controls select { display: block; width: 100%; margin-top: 4px; }
 .calendar-scroll { overflow-x: auto; padding: 4px 0 10px; }
@@ -186,6 +202,7 @@ footer { color: #60748e; text-align: center; padding: 0 20px 40px; font-size: 11
   .detail-grid > .panel { grid-column: 1 / -1; }
   .calendar-panel .panel-heading { align-items: flex-start; flex-direction: column; }
   .live-layout { grid-template-columns: 1fr; }
+  .briefing-facts { grid-template-columns: 1fr; }
 }
 
 @media (max-width: 520px) {

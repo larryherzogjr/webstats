@@ -10,6 +10,7 @@
   let range = initialState.range;
   let pagesOffset = 0;
   let almanacState = almanacStateFromUrl();
+  let briefingWeek = new URLSearchParams(window.location.search).get("week") || "";
 
   function localDate(date) {
     const copy = new Date(date.getTime() - date.getTimezoneOffset() * 60000);
@@ -179,6 +180,10 @@
     return `<article class="metric-card"><span class="label">${escapeHtml(label)}</span><strong>${escapeHtml(String(value))}</strong></article>`;
   }
 
+  function signed(value) {
+    return `${value > 0 ? "+" : ""}${fmt.format(value)}`;
+  }
+
   function escapeHtml(value) {
     const node = document.createElement("span");
     node.textContent = value ?? "";
@@ -274,9 +279,10 @@
   async function loadOverview() {
     clearError();
     try {
-      const [data, journal] = await Promise.all([
+      const [data, journal, briefing] = await Promise.all([
         api(`/api/overview?${query()}`),
         api(`/api/events?${query({ limit: 100 })}`),
+        api("/api/briefing"),
       ]);
       document.querySelector("#range-label").textContent = dateLabel(data.from, data.to);
       document.querySelector("#site-cards").innerHTML = data.sites.map(site => {
@@ -304,8 +310,94 @@
         metric("Server error rate (5xx)", `${data.totals.server_error_rate}%`),
         metric("Bot share", `${data.totals.bot_share}%`),
       ].join("");
+      document.querySelector("#briefing-preview-heading").textContent = briefing.week.complete
+        ? `Week of ${dateLabel(briefing.week.from, briefing.week.to)}`
+        : `This week so far · ${dateLabel(briefing.week.from, briefing.week.to)}`;
+      document.querySelector("#briefing-preview").innerHTML = briefing.narrative.slice(0, 3)
+        .map((line, index) => `<p${index === 0 ? ' class="lead"' : ""}>${escapeHtml(line)}</p>`)
+        .join("");
       renderEvents(journal.events);
     } catch (error) { showError(error); }
+  }
+
+  function renderBriefingFacts(selector, facts) {
+    const target = document.querySelector(selector);
+    target.innerHTML = facts.map(fact => `<article><strong>${escapeHtml(String(fact.value))}</strong><span>${escapeHtml(fact.label)}</span>${fact.detail ? `<small>${escapeHtml(fact.detail)}</small>` : ""}</article>`).join("");
+  }
+
+  async function loadBriefing(push = false) {
+    clearError();
+    try {
+      const suffix = briefingWeek ? `?week=${encodeURIComponent(briefingWeek)}` : "";
+      const data = await api(`/api/briefing${suffix}`);
+      briefingWeek = data.week.from;
+      window.history[push ? "pushState" : "replaceState"]({}, "", `${window.location.pathname}?week=${encodeURIComponent(briefingWeek)}`);
+      document.querySelector("#briefing-range").textContent = dateLabel(data.week.from, data.week.to);
+      const status = document.querySelector("#briefing-status");
+      status.textContent = data.week.complete ? "Complete" : "In progress";
+      status.className = `status-badge ${data.week.complete ? "ok" : ""}`;
+      const weekSelect = document.querySelector("#briefing-week");
+      weekSelect.innerHTML = data.available_weeks.map(week => {
+        const label = `${dateLabel(week.week, week.to)}${week.complete ? "" : " · in progress"}`;
+        return `<option value="${escapeHtml(week.week)}"${week.week === data.week.from ? " selected" : ""}>${escapeHtml(label)}</option>`;
+      }).join("");
+      const narrative = data.narrative.length
+        ? data.narrative
+        : ["The week was quiet. No human page traffic or notable automatic moments were recorded."];
+      document.querySelector("#briefing-narrative").innerHTML = narrative
+        .map((line, index) => `<p${index === 0 ? ' class="lead"' : ""}>${escapeHtml(line)}</p>`)
+        .join("");
+      const requestChange = data.summary.request_change_percent;
+      const visitorChange = data.summary.visitor_change_percent;
+      document.querySelector("#briefing-metrics").innerHTML = [
+        metric("Human page requests", fmt.format(data.summary.requests)),
+        metric("Traffic change", requestChange === null ? "New activity" : `${requestChange > 0 ? "+" : ""}${requestChange}%`),
+        metric("Visitor-days", fmt.format(data.summary.visitor_days)),
+        metric("Visitor change", visitorChange === null ? "New activity" : `${visitorChange > 0 ? "+" : ""}${visitorChange}%`),
+        metric("Active sites", fmt.format(data.summary.active_sites)),
+        metric("Countries", fmt.format(data.geography.countries)),
+      ].join("");
+      const siteBody = document.querySelector("#briefing-sites");
+      siteBody.innerHTML = data.sites.some(site => site.requests || site.previous_requests)
+        ? data.sites.filter(site => site.requests || site.previous_requests).map(site => {
+            const style = site.change > 0 ? "change-up" : site.change < 0 ? "change-down" : "";
+            return `<tr><td><a class="table-link" href="/site/${encodeURIComponent(site.site)}?from=${encodeURIComponent(data.week.from)}&to=${encodeURIComponent(data.week.to)}">${escapeHtml(site.site)}</a></td><td>${fmt.format(site.requests)}</td><td class="${style}">${escapeHtml(signed(site.change))}</td></tr>`;
+          }).join("")
+        : '<tr><td class="empty" colspan="3">No site traffic in this week.</td></tr>';
+      const pageBody = document.querySelector("#briefing-pages");
+      pageBody.innerHTML = data.page_changes.length
+        ? data.page_changes.map(item => {
+            const style = item.change > 0 ? "change-up" : item.change < 0 ? "change-down" : "";
+            const params = new URLSearchParams({ from: data.week.from, to: data.week.to, bots: "0", assets: "0", path: item.path });
+            const href = `/site/${encodeURIComponent(item.site)}/page?${params}`;
+            return `<tr><td><a class="table-link" href="${escapeHtml(href)}">${escapeHtml(item.path)}</a><span class="table-subtitle">${escapeHtml(item.site)}</span></td><td>${fmt.format(item.requests)}</td><td class="${style}">${escapeHtml(signed(item.change))}</td></tr>`;
+          }).join("")
+        : '<tr><td class="empty" colspan="3">No page movement to report.</td></tr>';
+      const newPages = data.moments.filter(item => item.kind === "new_page");
+      const newReferrers = data.moments.filter(item => item.kind === "new_referrer");
+      renderBriefingFacts("#briefing-discoveries", [
+        { value: data.discoveries.pages, label: "new pages discovered", detail: newPages[0] ? `${newPages[0].site}${newPages[0].path}` : "No new content this week" },
+        { value: data.discoveries.referrers, label: "new referring domains", detail: newReferrers[0] ? `${newReferrers[0].source} → ${newReferrers[0].path}` : "No new referrers this week" },
+        { value: data.moment_counts.traffic_record || 0, label: "traffic records", detail: `${data.moment_counts.traffic_spike || 0} unusual spikes` },
+      ]);
+      renderBriefingFacts("#briefing-signals", [
+        { value: data.ai.requests, label: "AI crawler page requests", detail: `${data.ai.agents} agents across ${data.ai.pages} pages` },
+        { value: data.feeds.reporting_feeds ? fmt.format(data.feeds.reported_subscribers) : "—", label: "reported feed subscriptions", detail: data.feeds.reporting_feeds ? `${signed(data.feeds.change)} from the prior week` : "No reader reports a subscriber count" },
+        { value: data.geography.new_countries.length, label: "first-time countries", detail: data.geography.new_countries.slice(0, 5).join(", ") || "No first-time countries" },
+      ]);
+      renderEvents(data.moments, "#briefing-moments");
+    } catch (error) { showError(error); }
+  }
+
+  function setupBriefings() {
+    document.querySelector("#apply-briefing").addEventListener("click", () => {
+      briefingWeek = document.querySelector("#briefing-week").value;
+      loadBriefing(true);
+    });
+    window.addEventListener("popstate", () => {
+      briefingWeek = new URLSearchParams(window.location.search).get("week") || "";
+      loadBriefing(false);
+    });
   }
 
   function fillTable(selector, rows, columns, empty = "No data for this range") {
@@ -752,5 +844,6 @@
   if (page === "ai-crawlers") { setupFilters(loadAiCrawlers); loadAiCrawlers(); }
   if (page === "feed-readers") { setupFilters(loadFeedReaders); loadFeedReaders(); }
   if (page === "almanac") { setupAlmanac(); loadAlmanac(); }
+  if (page === "briefings") { setupBriefings(); loadBriefing(); }
   if (page === "health") loadHealth();
 })();
