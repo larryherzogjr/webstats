@@ -20,6 +20,8 @@ log paths, retention, timezone, and log format all live in TOML configuration.
   country classification.
 - A durable event journal for first-time referrers and AI crawler
   sightings, plus a page-level AI crawler field guide.
+- Clickable per-page stories with permanent daily history, lifetime first and
+  last sightings, referrers, AI readers, countries, and response codes.
 - Idempotent daily rollups retained after raw request pruning.
 - Authenticated JSON APIs and responsive server-rendered pages.
 - Zero-filled daily charts, automatic hourly charts for retained one-day raw
@@ -204,6 +206,8 @@ All routes require the admin session except `/api/health`:
 - `GET /api/overview?from=&to=&bots=0&assets=0`
 - `GET /api/site/<name>/timeseries?from=&to=&interval=day|hour`
 - `GET /api/site/<name>/pages`, `/referrers`, `/status`, `/agents`, `/countries`
+- `GET /api/site/<name>/page?path=/requested/path`
+- `GET /api/events`, `/ai-crawlers`
 - `GET /api/live?minutes=60`
 - `GET /api/health`
 

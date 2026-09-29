@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% block title %}{{ page_path }} | {{ site_name }} | Webstats{% endblock %}
+{% block page_id %}page{% endblock %}
+{% block body_data %} data-site="{{ site_name }}" data-path="{{ page_path }}"{% endblock %}
+{% block content %}
+<div class="page-heading">
+  <div><p class="eyebrow">{{ site_name }}</p><h1 class="path-heading">{{ page_path }}</h1></div>
+  <a id="site-link" class="text-link" href="{{ url_for('views.site', name=site_name) }}">Back to site</a>
+</div>
+{% include "_filters.html" %}
+<div id="page-error" class="alert hidden" role="alert"></div>
+<section id="page-metrics" class="metric-grid" aria-label="Page metrics"></section>
+<section class="panel chart-panel">
+  <div class="panel-heading"><div><p class="eyebrow">Page history</p><h2>Requests and visitor-days</h2></div></div>
+  <div class="chart-wrap"><canvas id="page-chart"></canvas></div>
+</section>
+<div class="detail-grid">
+  <section class="panel">
+    <div class="panel-heading"><div><p class="eyebrow">Discovery</p><h2>Referrers to this page</h2></div></div>
+    <div class="table-wrap"><table><thead><tr><th>Source</th><th>Requests</th></tr></thead><tbody id="page-referrers"></tbody></table></div>
+  </section>
+  <section class="panel">
+    <div class="panel-heading"><div><p class="eyebrow">Robot naturalist</p><h2>AI readers</h2></div></div>
+    <div class="table-wrap"><table><thead><tr><th>Agent</th><th>Purpose</th><th>Requests</th></tr></thead><tbody id="page-ai-agents"></tbody></table></div>
+  </section>
+  <section class="panel">
+    <div class="panel-heading"><div><p class="eyebrow">Location</p><h2>Countries</h2></div></div>
+    <div class="table-wrap"><table><thead><tr><th>Country</th><th>Requests</th></tr></thead><tbody id="page-countries"></tbody></table></div>
+    {% if geoip_enabled %}
+    <p class="data-attribution"><a href="https://db-ip.com" target="_blank" rel="noopener noreferrer">IP Geolocation by DB-IP</a></p>
+    {% endif %}
+  </section>
+  <section class="panel">
+    <div class="panel-heading"><div><p class="eyebrow">Responses</p><h2>Status codes</h2></div></div>
+    <div class="table-wrap"><table><thead><tr><th>Status</th><th>Requests</th></tr></thead><tbody id="page-statuses"></tbody></table></div>
+  </section>
+</div>
+{% endblock %}

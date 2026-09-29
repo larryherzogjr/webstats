@@ -37,7 +37,10 @@ class DatabaseMigrationTests(unittest.TestCase):
             self.assertEqual(version, SCHEMA_VERSION)
             self.assertIn("source_fingerprint", columns)
             self.assertTrue(
-                {"daily_page_referrer", "daily_page_agent", "events"} <= tables
+                {
+                    "daily_page_referrer", "daily_page_agent",
+                    "daily_page_country", "daily_page_status", "events",
+                } <= tables
             )
 
     def test_version_one_database_is_migrated_in_place(self):
@@ -99,10 +102,14 @@ class DatabaseMigrationTests(unittest.TestCase):
                 event = conn.execute(
                     "SELECT kind, agent FROM events"
                 ).fetchone()
+                page_status = conn.execute(
+                    "SELECT path, status, requests FROM daily_page_status"
+                ).fetchone()
             self.assertEqual(version, SCHEMA_VERSION)
             self.assertEqual(fingerprint, "0123456789abcdef")
             self.assertEqual(tuple(page_agent), ("/", "GPTBot"))
             self.assertEqual(tuple(event), ("first_ai_visit", "GPTBot"))
+            self.assertEqual(tuple(page_status), ("/", 200, 1))
 
     def test_newer_database_is_rejected(self):
         with tempfile.TemporaryDirectory() as temp:

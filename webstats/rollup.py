@@ -33,7 +33,8 @@ def recompute_day(conn: sqlite3.Connection, day: str) -> None:
     tables = (
         "daily_site", "daily_traffic", "daily_filter", "daily_path",
         "daily_referrer", "daily_page_referrer", "daily_agent",
-        "daily_page_agent", "daily_country", "daily_status", "daily_404",
+        "daily_page_agent", "daily_page_country", "daily_page_status",
+        "daily_country", "daily_status", "daily_404",
     )
     for table in tables:
         conn.execute(f"DELETE FROM {table} WHERE day = ?", (day,))
@@ -132,6 +133,26 @@ def recompute_day(conn: sqlite3.Connection, day: str) -> None:
         SELECT site_id, day, path, ua_family, is_bot, COUNT(*), SUM(is_asset=1)
         FROM requests WHERE day=?
         GROUP BY site_id, day, path, ua_family, is_bot
+        """,
+        (day,),
+    )
+    conn.execute(
+        """
+        INSERT INTO daily_page_country
+        SELECT site_id, day, path, country, COUNT(*), SUM(is_bot=0),
+               SUM(is_asset=0), SUM(is_bot=0 AND is_asset=0)
+        FROM requests WHERE day=? AND country IS NOT NULL
+        GROUP BY site_id, day, path, country
+        """,
+        (day,),
+    )
+    conn.execute(
+        """
+        INSERT INTO daily_page_status
+        SELECT site_id, day, path, status, COUNT(*), SUM(is_bot=0),
+               SUM(is_asset=0), SUM(is_bot=0 AND is_asset=0)
+        FROM requests WHERE day=?
+        GROUP BY site_id, day, path, status
         """,
         (day,),
     )

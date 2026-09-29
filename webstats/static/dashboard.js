@@ -49,8 +49,16 @@
     };
   }
 
+  function persistentParams() {
+    return page === "page" ? { path: document.body.dataset.path } : {};
+  }
+
   function query(extra = {}) {
-    return new URLSearchParams({ ...range, ...filters(), ...extra }).toString();
+    return new URLSearchParams({ ...range, ...filters(), ...persistentParams(), ...extra }).toString();
+  }
+
+  function siteQuery() {
+    return new URLSearchParams({ ...range, ...filters() }).toString();
   }
 
   function syncUrl(push = true) {
@@ -260,7 +268,18 @@
       });
       const heading = document.querySelector("#traffic-heading");
       if (heading) heading.textContent = actualInterval === "hour" ? "Requests and hourly visitors" : "Requests and daily visitors";
-      fillTable("#pages-table", pages.pages, [{ key: "path" }, { key: "requests", format: fmt.format }, { key: "unique_visitors", format: fmt.format }]);
+      fillTable("#pages-table", pages.pages, [
+        {
+          key: "path",
+          format: value => {
+            const params = new URLSearchParams({ ...range, ...filters(), path: value });
+            const href = `/site/${encodeURIComponent(site)}/page?${params}`;
+            return `<a class="table-link" href="${escapeHtml(href)}">${escapeHtml(value)}</a>`;
+          },
+        },
+        { key: "requests", format: fmt.format },
+        { key: "unique_visitors", format: fmt.format },
+      ]);
       document.querySelector("#pages-prev").disabled = pagesOffset === 0;
       document.querySelector("#pages-next").disabled = pages.pages.length < 25;
       fillTable("#referrers-table", referrers.referrers, [{ key: "group" }, { key: "requests", format: fmt.format }]);
@@ -274,6 +293,50 @@
         data: { labels: statuses.statuses.map(row => String(row.status)), datasets: [{ data: statuses.statuses.map(row => row.requests), backgroundColor: statuses.statuses.map((row, index) => colors[index % colors.length]), borderColor: "#142135", borderWidth: 3 }] },
         options: { responsive: true, maintainAspectRatio: false, cutout: "68%", plugins: chartOptions.plugins },
       });
+    } catch (error) { showError(error); }
+  }
+
+  async function loadPage() {
+    clearError();
+    const site = document.body.dataset.site;
+    try {
+      const siteLink = document.querySelector("#site-link");
+      if (siteLink) siteLink.href = `/site/${encodeURIComponent(site)}?${siteQuery()}`;
+      const data = await api(`/api/site/${encodeURIComponent(site)}/page?${query()}`);
+      document.querySelector("#page-metrics").innerHTML = [
+        metric("Requests", fmt.format(data.totals.requests)),
+        metric("Visitor-days", fmt.format(data.totals.unique_visitors)),
+        metric("First seen", data.totals.first_seen || "Never"),
+        metric("Last seen", data.totals.last_seen || "Never"),
+      ].join("");
+      updateChart("page", document.querySelector("#page-chart"), {
+        type: "line",
+        data: {
+          labels: data.series.map(row => row.bucket),
+          datasets: [
+            { label: "Requests", data: data.series.map(row => row.requests), borderColor: colors[0], backgroundColor: `${colors[0]}22`, tension: .3, fill: true },
+            { label: "Visitor-days", data: data.series.map(row => row.unique_visitors), borderColor: colors[1], backgroundColor: "transparent", tension: .3 },
+          ],
+        },
+        options: chartOptions,
+      });
+      fillTable("#page-referrers", data.referrers, [
+        { key: "group" },
+        { key: "requests", format: fmt.format },
+      ], "No referrers to this page in this range.");
+      fillTable("#page-ai-agents", data.ai_agents, [
+        { key: "agent", format: (value, row) => `<strong>${escapeHtml(value)}</strong><span class="table-subtitle">${escapeHtml(row.provider)}</span>` },
+        { key: "purpose" },
+        { key: "requests", format: fmt.format },
+      ], "No recognized AI readers visited this page in this range.");
+      fillTable("#page-countries", data.countries, [
+        { key: "country" },
+        { key: "requests", format: fmt.format },
+      ], "GeoIP is disabled or no country data is available.");
+      fillTable("#page-statuses", data.statuses, [
+        { key: "status" },
+        { key: "requests", format: fmt.format },
+      ], "No responses for this page in this range.");
     } catch (error) { showError(error); }
   }
 
@@ -339,6 +402,7 @@
     document.querySelector("#pages-next")?.addEventListener("click", () => { pagesOffset += 25; loadSite(); });
     loadSite();
   }
+  if (page === "page") { setupFilters(loadPage); loadPage(); }
   if (page === "live") {
     document.querySelectorAll("#include-bots, #include-assets").forEach(input => input.addEventListener("change", loadLive));
     loadLive();

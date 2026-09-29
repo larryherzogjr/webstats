@@ -3,7 +3,7 @@
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from flask import Blueprint, abort, current_app, render_template
+from flask import Blueprint, abort, current_app, render_template, request
 
 from .auth import login_required
 
@@ -32,6 +32,25 @@ def site(name: str):
     return render_template(
         "site.html",
         site_name=name,
+        geoip_enabled=config.geoip.enabled,
+        server_today=_server_today(),
+    )
+
+
+@views_bp.get("/site/<path:name>/page")
+@login_required
+def page(name: str):
+    config = current_app.config["WEBSTATS_CONFIG"]
+    configured = {site.name for site in config.sites}
+    if name not in configured:
+        abort(404)
+    page_path = request.args.get("path", "")
+    if not page_path or len(page_path) > 2048 or not page_path.startswith("/"):
+        abort(400)
+    return render_template(
+        "page.html",
+        site_name=name,
+        page_path=page_path,
         geoip_enabled=config.geoip.enabled,
         server_today=_server_today(),
     )

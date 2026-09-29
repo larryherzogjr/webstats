@@ -81,6 +81,10 @@ class ApiTests(unittest.TestCase):
             self.assertTrue(session.permanent)
         self.assertEqual(self.client.get("/").status_code, 200)
         self.assertEqual(self.client.get("/site/example.com").status_code, 200)
+        page = self.client.get("/site/example.com/page?path=/one")
+        self.assertEqual(page.status_code, 200)
+        self.assertIn("/one", page.get_data(as_text=True))
+        self.assertEqual(self.client.get("/site/example.com/page").status_code, 400)
         self.assertEqual(self.client.get("/ai-crawlers").status_code, 200)
         self.assertEqual(self.client.get("/live").status_code, 200)
         self.assertEqual(self.client.get("/health").status_code, 200)
@@ -288,7 +292,7 @@ class ApiTests(unittest.TestCase):
             handle.write(
                 line(
                     "203.0.113.21",
-                    "/ai-essay",
+                    "/linked-essay",
                     ua="GPTBot/1.2 (+https://openai.com/gptbot)",
                 )
             )
@@ -309,7 +313,7 @@ class ApiTests(unittest.TestCase):
             {(event["kind"], event["path"]) for event in events},
             {
                 ("new_referrer", "/linked-essay"),
-                ("first_ai_visit", "/ai-essay"),
+                ("first_ai_visit", "/linked-essay"),
             },
         )
         referrer = next(
@@ -326,12 +330,45 @@ class ApiTests(unittest.TestCase):
         )
         self.assertEqual(body["sightings"][0]["agent"], "GPTBot")
         self.assertEqual(body["sightings"][0]["provider"], "OpenAI")
-        self.assertEqual(body["sightings"][0]["path"], "/ai-essay")
+        self.assertEqual(body["sightings"][0]["path"], "/linked-essay")
         with_assets = self.client.get(
             "/api/ai-crawlers?from=2026-09-28&to=2026-09-28&assets=1"
         ).get_json()
         self.assertEqual(with_assets["totals"]["requests"], 2)
         self.assertEqual(with_assets["totals"]["pages"], 2)
+
+        page = self.client.get(
+            "/api/site/example.com/page?path=%2Flinked-essay"
+            "&from=2026-09-28&to=2026-09-28"
+        ).get_json()
+        self.assertEqual(page["totals"]["requests"], 1)
+        self.assertEqual(page["totals"]["unique_visitors"], 1)
+        self.assertEqual(page["totals"]["first_seen"], "2026-09-28")
+        self.assertEqual(page["totals"]["last_seen"], "2026-09-28")
+        self.assertEqual(
+            page["referrers"],
+            [{"group": "news.ycombinator.com", "requests": 1}],
+        )
+        self.assertEqual(page["statuses"], [{"status": 200, "requests": 1}])
+        self.assertEqual(page["ai_agents"][0]["agent"], "GPTBot")
+        self.assertEqual(page["ai_agents"][0]["requests"], 1)
+        self.assertEqual(page["countries"], [])
+
+        with_bots = self.client.get(
+            "/api/site/example.com/page?path=%2Flinked-essay"
+            "&from=2026-09-28&to=2026-09-28&bots=1"
+        ).get_json()
+        self.assertEqual(with_bots["totals"]["requests"], 2)
+        self.assertEqual(with_bots["statuses"], [{"status": 200, "requests": 2}])
+
+        self.assertEqual(
+            self.client.get("/api/site/example.com/page?path=relative").status_code,
+            400,
+        )
+        self.assertEqual(
+            self.client.get("/api/site/example.com/page?path=%2Funknown").status_code,
+            404,
+        )
 
     def test_invalid_range_is_rejected(self):
         self.authenticate()

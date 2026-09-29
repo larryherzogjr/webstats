@@ -10,7 +10,7 @@ from .bots import classify_user_agent
 from .config import Config
 
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -121,6 +121,22 @@ CREATE TABLE IF NOT EXISTS daily_page_agent (
     asset_requests INTEGER NOT NULL,
     PRIMARY KEY(site_id, day, path, ua_family, is_bot)
 );
+CREATE TABLE IF NOT EXISTS daily_page_country (
+    site_id INTEGER NOT NULL REFERENCES sites(id), day TEXT NOT NULL,
+    path TEXT NOT NULL, country TEXT NOT NULL,
+    requests INTEGER NOT NULL, human_requests INTEGER NOT NULL,
+    nonasset_requests INTEGER NOT NULL,
+    human_nonasset_requests INTEGER NOT NULL,
+    PRIMARY KEY(site_id, day, path, country)
+);
+CREATE TABLE IF NOT EXISTS daily_page_status (
+    site_id INTEGER NOT NULL REFERENCES sites(id), day TEXT NOT NULL,
+    path TEXT NOT NULL, status INTEGER NOT NULL,
+    requests INTEGER NOT NULL, human_requests INTEGER NOT NULL,
+    nonasset_requests INTEGER NOT NULL,
+    human_nonasset_requests INTEGER NOT NULL,
+    PRIMARY KEY(site_id, day, path, status)
+);
 CREATE TABLE IF NOT EXISTS daily_country (
     site_id INTEGER NOT NULL REFERENCES sites(id), day TEXT NOT NULL,
     country TEXT NOT NULL, requests INTEGER NOT NULL,
@@ -215,7 +231,16 @@ def _migrate_2_to_3(conn: sqlite3.Connection) -> None:
         recompute_day(conn, day)
 
 
-MIGRATIONS = {1: _migrate_1_to_2, 2: _migrate_2_to_3}
+def _migrate_3_to_4(conn: sqlite3.Connection) -> None:
+    _execute_schema(conn)
+    from .rollup import recompute_day
+
+    days = [row["day"] for row in conn.execute("SELECT DISTINCT day FROM requests")]
+    for day in days:
+        recompute_day(conn, day)
+
+
+MIGRATIONS = {1: _migrate_1_to_2, 2: _migrate_2_to_3, 3: _migrate_3_to_4}
 
 
 def _execute_schema(conn: sqlite3.Connection) -> None:

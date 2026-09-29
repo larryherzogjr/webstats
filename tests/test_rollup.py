@@ -108,6 +108,24 @@ class RollupTests(unittest.TestCase):
             ),
             ("/essay", "GPTBot", 1),
         )
+        self.assertEqual(
+            tuple(
+                self.conn.execute(
+                    "SELECT path, country, requests, human_nonasset_requests "
+                    "FROM daily_page_country WHERE day='2026-09-28' AND country='US'"
+                ).fetchone()
+            ),
+            ("/essay", "US", 2, 1),
+        )
+        self.assertEqual(
+            tuple(
+                self.conn.execute(
+                    "SELECT path, status, requests, human_nonasset_requests "
+                    "FROM daily_page_status WHERE day='2026-09-28' AND status=200"
+                ).fetchone()
+            ),
+            ("/essay", 200, 2, 1),
+        )
 
 
 if __name__ == "__main__":

@@ -39,6 +39,13 @@ def _int_arg(name: str, default: int, minimum: int, maximum: int) -> int:
     return min(max(value, minimum), maximum)
 
 
+def _path_arg() -> str:
+    value = request.args.get("path", "")
+    if not value or len(value) > 2048 or not value.startswith("/"):
+        raise ApiError("path must be an absolute request path", 400)
+    return value
+
+
 def _date_range() -> tuple[str, str]:
     config = current_app.config["WEBSTATS_CONFIG"]
     today = datetime.now(ZoneInfo(config.server.timezone)).date()
@@ -434,6 +441,138 @@ def pages(name: str):
             )
         ]
     return jsonify({"site": name, "pages": rows, "limit": limit, "offset": offset})
+
+
+@api_bp.get("/site/<path:name>/page")
+@login_required
+def page_detail(name: str):
+    start, end = _date_range()
+    path = _path_arg()
+    bots, assets = _flags()
+    request_col = "requests" if bots else "human_requests"
+    unique_col = "unique_visitors" if bots else "human_unique_visitors"
+    metric = _metric_column(bots, assets)
+    asset_clause = "" if assets else "AND asset_requests=0"
+    agent_value = "requests" if assets else "requests-asset_requests"
+    families = tuple(AI_AGENTS)
+    placeholders = ",".join("?" for _ in families)
+
+    with _conn() as conn:
+        site = _site(conn, name)
+        known = conn.execute(
+            "SELECT 1 FROM daily_path WHERE site_id=? AND path=? LIMIT 1",
+            (site["id"], path),
+        ).fetchone()
+        if known is None:
+            raise ApiError("Unknown page path", 404)
+
+        stored_series = [
+            dict(row)
+            for row in conn.execute(
+                f"""
+                SELECT day bucket, SUM({request_col}) requests,
+                       SUM({unique_col}) unique_visitors
+                FROM daily_path
+                WHERE site_id=? AND path=? AND day BETWEEN ? AND ? {asset_clause}
+                GROUP BY day ORDER BY day
+                """,
+                (site["id"], path, start, end),
+            )
+        ]
+        values = {row["bucket"]: row for row in stored_series}
+        series = [
+            values.get(
+                day,
+                {"bucket": day, "requests": 0, "unique_visitors": 0},
+            )
+            for day in _day_buckets(start, end)
+        ]
+        lifetime = conn.execute(
+            f"""
+            SELECT MIN(day) first_seen, MAX(day) last_seen
+            FROM daily_path
+            WHERE site_id=? AND path=? AND {request_col}>0 {asset_clause}
+            """,
+            (site["id"], path),
+        ).fetchone()
+
+        referrer_rows = conn.execute(
+            f"""
+            SELECT referrer_host, SUM({metric}) requests
+            FROM daily_page_referrer
+            WHERE site_id=? AND path=? AND day BETWEEN ? AND ?
+            GROUP BY referrer_host HAVING SUM({metric})>0
+            """,
+            (site["id"], path, start, end),
+        )
+        grouped_referrers: dict[str, int] = defaultdict(int)
+        for row in referrer_rows:
+            grouped_referrers[_referrer_group(row["referrer_host"])] += row["requests"]
+        referrers = [
+            {"group": group, "requests": count}
+            for group, count in sorted(
+                grouped_referrers.items(), key=lambda item: (-item[1], item[0])
+            )
+        ][:25]
+
+        countries = [
+            dict(row)
+            for row in conn.execute(
+                f"""
+                SELECT country, SUM({metric}) requests FROM daily_page_country
+                WHERE site_id=? AND path=? AND day BETWEEN ? AND ?
+                GROUP BY country HAVING SUM({metric})>0
+                ORDER BY requests DESC, country LIMIT 25
+                """,
+                (site["id"], path, start, end),
+            )
+        ]
+        statuses = [
+            dict(row)
+            for row in conn.execute(
+                f"""
+                SELECT status, SUM({metric}) requests FROM daily_page_status
+                WHERE site_id=? AND path=? AND day BETWEEN ? AND ?
+                GROUP BY status HAVING SUM({metric})>0 ORDER BY status
+                """,
+                (site["id"], path, start, end),
+            )
+        ]
+        agent_rows = conn.execute(
+            f"""
+            SELECT ua_family agent, SUM({agent_value}) requests,
+                   MIN(day) first_seen, MAX(day) last_seen
+            FROM daily_page_agent
+            WHERE site_id=? AND path=? AND day BETWEEN ? AND ? AND is_bot=1
+              AND ua_family IN ({placeholders})
+            GROUP BY ua_family HAVING SUM({agent_value})>0
+            ORDER BY requests DESC, agent
+            """,
+            (site["id"], path, start, end, *families),
+        )
+        ai_agents = []
+        for row in agent_rows:
+            provider, purpose = AI_AGENTS[row["agent"]]
+            ai_agents.append({**dict(row), "provider": provider, "purpose": purpose})
+
+    totals = {
+        "requests": sum(row["requests"] for row in series),
+        "unique_visitors": sum(row["unique_visitors"] for row in series),
+        "first_seen": lifetime["first_seen"],
+        "last_seen": lifetime["last_seen"],
+    }
+    return jsonify({
+        "site": name,
+        "path": path,
+        "from": start,
+        "to": end,
+        "series": series,
+        "totals": totals,
+        "referrers": referrers,
+        "countries": countries,
+        "statuses": statuses,
+        "ai_agents": ai_agents,
+    })
 
 
 def _ranked_endpoint(name: str, table: str, dimension: str, output: str):
