@@ -15,6 +15,7 @@
   let linkSource = initialState.source;
   let inboxCategory = initialState.category;
   let inboxSeenAt = readInboxSeenAt();
+  let galaxyData = null;
   let errorsDays = [7, 30, 90].includes(Number(new URLSearchParams(window.location.search).get("days")))
     ? Number(new URLSearchParams(window.location.search).get("days")) : 30;
 
@@ -921,6 +922,131 @@
     } catch (error) { showError(error); }
   }
 
+  function galaxyNodeHref(node, data) {
+    if (node.kind === "page") return pageStoryHref(node, data.from, data.to);
+    if (node.kind === "source") {
+      const params = new URLSearchParams({
+        from: data.from, to: data.to, bots: "0", assets: "0",
+        source: node.source,
+      });
+      if (scopeSite) params.set("site", scopeSite);
+      return `/links?${params}`;
+    }
+    const params = new URLSearchParams({
+      from: data.from, to: data.to, bots: "1", assets: "0",
+    });
+    if (scopeSite) params.set("site", scopeSite);
+    return `/ai-crawlers?${params}`;
+  }
+
+  function galaxyPositions(nodes) {
+    const positions = new Map();
+    const pages = nodes.filter(node => node.kind === "page");
+    const sources = nodes.filter(node => node.kind === "source");
+    const agents = nodes.filter(node => node.kind === "ai");
+    const center = { x: 560, y: 340 };
+    pages.forEach((node, index) => {
+      if (index === 0) return positions.set(node.id, center);
+      const inner = index <= 8;
+      const offset = inner ? 1 : 9;
+      const count = inner ? Math.min(8, Math.max(1, pages.length - 1)) : Math.max(1, pages.length - 9);
+      const angle = -Math.PI / 2 + 2 * Math.PI * (index - offset) / count;
+      const radiusX = inner ? 170 : 285;
+      const radiusY = inner ? 130 : 245;
+      positions.set(node.id, {
+        x: center.x + Math.cos(angle) * radiusX,
+        y: center.y + Math.sin(angle) * radiusY,
+      });
+    });
+    sources.forEach((node, index) => positions.set(node.id, {
+      x: index % 2 ? 185 : 75,
+      y: 72 + (index + .5) * 536 / Math.max(1, sources.length),
+    }));
+    agents.forEach((node, index) => positions.set(node.id, {
+      x: index % 2 ? 935 : 1045,
+      y: 84 + (index + .5) * 512 / Math.max(1, agents.length),
+    }));
+    return positions;
+  }
+
+  function renderGalaxy() {
+    const target = document.querySelector("#galaxy-map");
+    if (!target || !galaxyData) return;
+    if (!galaxyData.nodes.length) {
+      target.innerHTML = '<p class="empty">No connected pages in this range.</p>';
+      return;
+    }
+    const layers = {
+      referral: document.querySelector("#galaxy-referrals")?.checked ?? true,
+      journey: document.querySelector("#galaxy-journeys")?.checked ?? true,
+      ai: document.querySelector("#galaxy-ai")?.checked ?? true,
+    };
+    const visibleNodes = galaxyData.nodes.filter(node =>
+      node.kind === "page" || (node.kind === "source" && layers.referral)
+      || (node.kind === "ai" && layers.ai)
+    );
+    const nodeIds = new Set(visibleNodes.map(node => node.id));
+    const visibleEdges = galaxyData.edges.filter(edge =>
+      layers[edge.kind] && nodeIds.has(edge.from) && nodeIds.has(edge.to)
+    );
+    const positions = galaxyPositions(galaxyData.nodes);
+    const maxWeight = Math.max(1, ...galaxyData.nodes.map(node => node.weight));
+    const shortLabel = value => value.length > 24 ? `${value.slice(0, 22)}…` : value;
+    const edgeSvg = visibleEdges.map(edge => {
+      const from = positions.get(edge.from);
+      const to = positions.get(edge.to);
+      const bend = edge.kind === "journey" ? -18 : edge.kind === "ai" ? 12 : 0;
+      const middleX = (from.x + to.x) / 2;
+      const middleY = (from.y + to.y) / 2 + bend;
+      const width = Math.min(6, 1 + Math.log2(edge.weight + 1));
+      return `<path class="galaxy-edge ${escapeHtml(edge.kind)}" aria-hidden="true" d="M ${from.x.toFixed(1)} ${from.y.toFixed(1)} Q ${middleX.toFixed(1)} ${middleY.toFixed(1)} ${to.x.toFixed(1)} ${to.y.toFixed(1)}" style="stroke-width:${width.toFixed(1)}" marker-end="url(#arrow-${escapeHtml(edge.kind)})"></path>`;
+    }).join("");
+    const nodeSvg = visibleNodes.map(node => {
+      const position = positions.get(node.id);
+      const radius = Math.min(20, 7 + 12 * Math.sqrt(node.weight / maxWeight));
+      const href = galaxyNodeHref(node, galaxyData);
+      const description = node.kind === "page"
+        ? `${node.site} ${node.path}: ${node.weight} human visits`
+        : node.kind === "source"
+          ? `${node.source}: ${node.weight} referred visits`
+          : `${node.agent} by ${node.provider}: ${node.weight} requests`;
+      return `<a href="${escapeHtml(href)}" role="link" tabindex="0" aria-label="${escapeHtml(description)}"><g class="galaxy-node ${escapeHtml(node.kind)}" transform="translate(${position.x.toFixed(1)} ${position.y.toFixed(1)})"><circle r="${radius.toFixed(1)}"></circle><text y="${(radius + 14).toFixed(1)}" text-anchor="middle">${escapeHtml(shortLabel(node.label))}</text><title>${escapeHtml(description)}</title></g></a>`;
+    }).join("");
+    target.innerHTML = `<svg class="galaxy-svg" viewBox="0 0 1120 680" aria-label="Page Galaxy relationship map"><title>Page Galaxy relationship map</title><defs><marker id="arrow-referral" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z"></path></marker><marker id="arrow-journey" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z"></path></marker><marker id="arrow-ai" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z"></path></marker></defs>${edgeSvg}${nodeSvg}</svg>`;
+  }
+
+  async function loadGalaxy() {
+    clearError();
+    try {
+      const data = await api(`/api/galaxy?${query({ limit: 24 })}`);
+      galaxyData = data;
+      document.querySelector("#range-label").textContent = dateLabel(data.from, data.to);
+      const privacy = document.querySelector("#galaxy-privacy");
+      privacy.classList.toggle("hidden", !data.privacy.protected);
+      privacy.textContent = data.privacy.protected
+        ? `${data.scope.site} is privacy-protected. Page Galaxy does not construct relationships from its activity.`
+        : "";
+      document.querySelector("#galaxy-metrics").innerHTML = [
+        metric("Human page visits", fmt.format(data.totals.page_requests)),
+        metric("Pages", fmt.format(data.totals.pages)),
+        metric("Mapped referring sites", fmt.format(data.totals.mapped_sources)),
+        metric("AI readers", fmt.format(data.totals.ai_agents)),
+        metric("Connections", fmt.format(data.totals.connections)),
+      ].join("");
+      renderGalaxy();
+      fillTable("#galaxy-pages", data.pages, [
+        { key: "path", format: (value, item) => `<a class="table-link" href="${escapeHtml(pageStoryHref(item, data.from, data.to))}">${escapeHtml(value)}</a>` },
+        { key: "site" },
+        { key: "requests", format: fmt.format },
+        { key: "referrals", format: fmt.format },
+        { key: "sources", format: fmt.format },
+        { key: "ai_requests", format: fmt.format },
+        { key: "entrances", format: fmt.format },
+        { key: "exits", format: fmt.format },
+      ], "No successful human pages in this range.");
+    } catch (error) { showError(error); }
+  }
+
   const countryPoints = {
     AD: [1.6, 42.5], AE: [54.4, 24.4], AF: [67.7, 33.9], AL: [20.2, 41.2],
     AR: [-64, -34], AT: [14.6, 47.5], AU: [134, -25], AZ: [47.6, 40.1],
@@ -1340,6 +1466,13 @@
     loadInbox();
   } else {
     loadInboxBadge();
+  }
+  if (page === "galaxy") {
+    setupFilters(loadGalaxy);
+    setupSiteFilter(() => { syncUrl(); loadGalaxy(); });
+    document.querySelectorAll("#galaxy-referrals, #galaxy-journeys, #galaxy-ai")
+      .forEach(input => input.addEventListener("change", renderGalaxy));
+    loadGalaxy();
   }
   if (page === "health") loadHealth();
 })();

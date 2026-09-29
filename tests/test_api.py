@@ -93,6 +93,7 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(self.client.get("/journeys").status_code, 200)
         self.assertEqual(self.client.get("/links").status_code, 200)
         self.assertEqual(self.client.get("/inbox").status_code, 200)
+        self.assertEqual(self.client.get("/galaxy").status_code, 200)
         self.assertEqual(self.client.get("/feed-readers").status_code, 200)
         self.assertEqual(self.client.get("/ai-crawlers").status_code, 200)
         self.assertEqual(self.client.get("/live").status_code, 200)
@@ -656,6 +657,98 @@ class ApiTests(unittest.TestCase):
             self.client.get(
                 "/api/feed-readers?site=unknown.example"
             ).status_code,
+            404,
+        )
+
+    def test_page_galaxy_combines_links_journeys_and_ai_attention(self):
+        with connect(self.config.storage.db_path) as conn:
+            site_id = site_id_map(conn)["example.com"]
+            conn.executemany(
+                """
+                INSERT INTO daily_page_status(
+                    site_id, day, path, status, requests, human_requests,
+                    nonasset_requests, human_nonasset_requests
+                ) VALUES (?, '2026-09-28', ?, 200, ?, ?, ?, ?)
+                """,
+                (
+                    (site_id, "/galaxy-one", 8, 8, 8, 8),
+                    (site_id, "/galaxy-two", 5, 5, 5, 5),
+                ),
+            )
+            conn.executemany(
+                """
+                INSERT INTO daily_page_referrer(
+                    site_id, day, path, referrer_host, requests,
+                    human_requests, nonasset_requests, human_nonasset_requests
+                ) VALUES (?, '2026-09-28', ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    (site_id, "/galaxy-one", "news.example", 4, 4, 4, 4),
+                    (site_id, "/galaxy-two", "news.example", 2, 2, 2, 2),
+                ),
+            )
+            conn.execute(
+                """
+                INSERT INTO daily_page_agent(
+                    site_id, day, path, ua_family, is_bot,
+                    requests, asset_requests
+                ) VALUES (?, '2026-09-28', '/galaxy-two', 'GPTBot', 1, 3, 0)
+                """,
+                (site_id,),
+            )
+            conn.executemany(
+                """
+                INSERT INTO daily_journey_endpoint(
+                    site_id, day, path, entrances, exits, single_page_sessions
+                ) VALUES (?, '2026-09-28', ?, ?, ?, ?)
+                """,
+                (
+                    (site_id, "/galaxy-one", 3, 1, 1),
+                    (site_id, "/galaxy-two", 1, 3, 1),
+                ),
+            )
+            conn.execute(
+                """
+                INSERT INTO daily_journey_transition(
+                    site_id, day, from_path, to_path, transitions
+                ) VALUES (?, '2026-09-28', '/galaxy-one', '/galaxy-two', 2)
+                """,
+                (site_id,),
+            )
+            conn.execute("INSERT INTO sites(name) VALUES ('ad-fontes.app')")
+            conn.commit()
+        self.authenticate()
+
+        response = self.client.get(
+            "/api/galaxy?from=2026-09-28&to=2026-09-28"
+            "&site=example.com&limit=4"
+        )
+        self.assertEqual(response.status_code, 200)
+        body = response.get_json()
+        self.assertEqual(body["scope"], {"site": "example.com"})
+        self.assertGreaterEqual(body["totals"]["pages"], 2)
+        self.assertEqual(body["totals"]["sources"], 1)
+        self.assertEqual(body["totals"]["ai_agents"], 1)
+        self.assertEqual(
+            {node["kind"] for node in body["nodes"]},
+            {"page", "source", "ai"},
+        )
+        self.assertEqual(
+            {edge["kind"] for edge in body["edges"]},
+            {"referral", "journey", "ai"},
+        )
+        pages = {row["path"]: row for row in body["pages"]}
+        self.assertEqual(pages["/galaxy-one"]["referrals"], 4)
+        self.assertEqual(pages["/galaxy-one"]["transitions_out"], 2)
+        self.assertEqual(pages["/galaxy-two"]["ai_requests"], 3)
+        self.assertEqual(pages["/galaxy-two"]["entrances"], 1)
+        private = self.client.get(
+            "/api/galaxy?site=ad-fontes.app"
+        ).get_json()
+        self.assertTrue(private["privacy"]["protected"])
+        self.assertEqual(private["nodes"], [])
+        self.assertEqual(
+            self.client.get("/api/galaxy?site=unknown.example").status_code,
             404,
         )
 

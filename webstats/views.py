@@ -134,6 +134,15 @@ def inbox():
     )
 
 
+@views_bp.get("/galaxy")
+@login_required
+def galaxy():
+    return render_template(
+        "galaxy.html", server_today=_server_today(), force_bots=True,
+        hide_assets=True, site_filter=True,
+    )
+
+
 @views_bp.get("/health")
 @login_required
 def health():

@@ -51,6 +51,10 @@ log paths, retention, timezone, and log format all live in TOML configuration.
   destination pages, including new, rising, loyal, resurfaced, cooling, and
   dormant sources, equal-period comparisons, and source drill-downs. Full
   referring URLs and query strings are never retained.
+- Page Galaxy, a dependency-free SVG constellation joining the busiest pages
+  to referring hosts, anonymous aggregate Reading Paths, and recognized AI
+  readers. Layers can be hidden independently and every node opens its source
+  intelligence or page story.
 - Clickable per-page stories with permanent daily history, lifetime first and
   last sightings, referrers, AI readers, countries, and response codes.
 - Idempotent daily rollups retained after raw request pruning.
@@ -264,12 +268,15 @@ All routes require the admin session except `/api/health`:
 - `GET /api/site/<name>/pages`, `/referrers`, `/status`, `/agents`, `/countries`
 - `GET /api/site/<name>/page?path=/requested/path`
 - `GET /api/events?from=&to=&site=&limit=`, `/ai-crawlers`
+- `GET /api/inbox?from=&to=&site=&category=&limit=`
 - `GET /api/feed-readers`
 - `GET /api/almanac?year=&site=&bots=0&assets=0`
 - `GET /api/briefing?week=YYYY-MM-DD` (the week must begin on Monday)
 - `GET /api/pulse?site=&limit=`
 - `GET /api/errors?site=&days=7|30|90&limit=`
 - `GET /api/journeys?from=&to=&site=`
+- `GET /api/link-atlas?from=&to=&site=&source=&limit=`
+- `GET /api/galaxy?from=&to=&site=&limit=`
 - `GET /api/live?minutes=60&limit=40`
 - `GET /api/health`
 

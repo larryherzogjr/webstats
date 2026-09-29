@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+{% block title %}Page Galaxy | Webstats{% endblock %}
+{% block page_id %}galaxy{% endblock %}
+{% block content %}
+<div class="page-heading">
+  <div><p class="eyebrow">Your web as a living system</p><h1>Page Galaxy</h1></div>
+  <p id="range-label" class="range-label"></p>
+</div>
+{% include "_filters.html" %}
+<div id="page-error" class="alert hidden" role="alert"></div>
+<div id="galaxy-privacy" class="alert hidden" role="status"></div>
+<section id="galaxy-metrics" class="metric-grid" aria-label="Galaxy summary"></section>
+<section class="panel galaxy-panel">
+  <div class="panel-heading galaxy-heading">
+    <div><p class="eyebrow">Relationship map</p><h2>Attention orbiting your pages</h2></div>
+    <div class="galaxy-layers" role="group" aria-label="Visible relationship layers">
+      <label><input id="galaxy-referrals" type="checkbox" checked> Referring sites</label>
+      <label><input id="galaxy-journeys" type="checkbox" checked> Reading paths</label>
+      <label><input id="galaxy-ai" type="checkbox" checked> AI readers</label>
+    </div>
+  </div>
+  <div class="galaxy-legend" aria-hidden="true">
+    <span class="page">Pages</span><span class="source">Referring sites</span><span class="ai">AI readers</span>
+  </div>
+  <div id="galaxy-map" class="galaxy-scroll" aria-live="polite"></div>
+</section>
+<section class="panel">
+  <div class="panel-heading">
+    <div><p class="eyebrow">Constellation index</p><h2>Pages at the center</h2></div>
+    <span class="legend-note">Click a page for its complete story</span>
+  </div>
+  <div class="table-wrap"><table><thead><tr><th>Page</th><th>Site</th><th>Human visits</th><th>Referrals</th><th>Sources</th><th>AI visits</th><th>Entrances</th><th>Exits</th></tr></thead><tbody id="galaxy-pages"></tbody></table></div>
+</section>
+<p class="muted methodology-note">Page Galaxy combines permanent human page totals, host-level referrers, anonymous aggregate Reading Paths, and recognized AI crawler activity. Line width reflects observed volume, not causality. Privacy-protected sites are excluded, and no new visitor identifier is stored.</p>
+{% endblock %}

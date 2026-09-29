@@ -2374,6 +2374,254 @@ def link_atlas():
     })
 
 
+@api_bp.get("/galaxy")
+@login_required
+def galaxy():
+    start, end = _date_range()
+    limit = _int_arg("limit", 24, 4, 40)
+    private_placeholders = ",".join(
+        "?" for _ in INDIVIDUAL_ACTIVITY_PRIVATE_SITES
+    )
+    empty_totals = {
+        "pages": 0, "sources": 0, "ai_agents": 0,
+        "mapped_sources": 0, "connections": 0, "page_requests": 0,
+    }
+    with _conn() as conn:
+        site = _requested_site(conn)
+        if site and site["name"] in INDIVIDUAL_ACTIVITY_PRIVATE_SITES:
+            return jsonify({
+                "scope": {"site": site["name"]}, "from": start, "to": end,
+                "privacy": {
+                    "protected": True,
+                    "excluded_sites": list(INDIVIDUAL_ACTIVITY_PRIVATE_SITES),
+                },
+                "totals": empty_totals, "nodes": [], "edges": [], "pages": [],
+            })
+
+        site_clause = "AND p.site_id=?" if site else ""
+        page_parameters: tuple[Any, ...] = (
+            start, end, *INDIVIDUAL_ACTIVITY_PRIVATE_SITES,
+            *((site["id"],) if site else ()), limit,
+        )
+        pages = [
+            dict(row)
+            for row in conn.execute(
+                f"""
+                SELECT p.site_id, s.name site, p.path,
+                       SUM(p.human_nonasset_requests) requests
+                FROM daily_page_status p JOIN sites s ON s.id=p.site_id
+                WHERE p.day BETWEEN ? AND ? AND p.status BETWEEN 200 AND 399
+                  AND p.human_nonasset_requests>0
+                  AND s.name NOT IN ({private_placeholders}) {site_clause}
+                GROUP BY p.site_id, p.path
+                ORDER BY requests DESC, s.name, p.path LIMIT ?
+                """,
+                page_parameters,
+            )
+        ]
+        page_ids = {
+            (row["site_id"], row["path"]): f"page-{index}"
+            for index, row in enumerate(pages)
+        }
+        page_details = {
+            key: {
+                **row, "id": page_ids[key], "referrals": 0, "sources": 0,
+                "ai_requests": 0, "agents": 0, "entrances": 0, "exits": 0,
+                "transitions_in": 0, "transitions_out": 0,
+            }
+            for key, row in (
+                ((row["site_id"], row["path"]), row) for row in pages
+            )
+        }
+
+        joined_site_clause = "AND x.site_id=?" if site else ""
+        common_parameters: tuple[Any, ...] = (
+            start, end, *INDIVIDUAL_ACTIVITY_PRIVATE_SITES,
+            *((site["id"],) if site else ()),
+        )
+        referral_rows = [
+            dict(row)
+            for row in conn.execute(
+                f"""
+                SELECT x.site_id, s.name site, x.path,
+                       LOWER(x.referrer_host) source,
+                       SUM(x.human_nonasset_requests) requests
+                FROM daily_page_referrer x JOIN sites s ON s.id=x.site_id
+                WHERE x.day BETWEEN ? AND ? AND x.human_nonasset_requests>0
+                  AND s.name NOT IN ({private_placeholders}) {joined_site_clause}
+                GROUP BY x.site_id, x.path, LOWER(x.referrer_host)
+                ORDER BY requests DESC, source
+                """,
+                common_parameters,
+            )
+        ]
+        source_totals: dict[str, int] = defaultdict(int)
+        for row in referral_rows:
+            if (row["site_id"], row["path"]) in page_ids:
+                source_totals[row["source"]] += row["requests"]
+        source_limit = min(16, max(8, limit // 2))
+        selected_sources = [
+            source for source, _ in sorted(
+                source_totals.items(), key=lambda item: (-item[1], item[0])
+            )[:source_limit]
+        ]
+        source_ids = {
+            source: f"source-{index}" for index, source in enumerate(selected_sources)
+        }
+
+        families = tuple(AI_AGENTS)
+        family_placeholders = ",".join("?" for _ in families)
+        agent_parameters: tuple[Any, ...] = (
+            start, end, *families, *INDIVIDUAL_ACTIVITY_PRIVATE_SITES,
+            *((site["id"],) if site else ()),
+        )
+        agent_rows = [
+            dict(row)
+            for row in conn.execute(
+                f"""
+                SELECT x.site_id, s.name site, x.path, x.ua_family agent,
+                       SUM(x.requests-x.asset_requests) requests
+                FROM daily_page_agent x JOIN sites s ON s.id=x.site_id
+                WHERE x.day BETWEEN ? AND ? AND x.is_bot=1
+                  AND x.ua_family IN ({family_placeholders})
+                  AND s.name NOT IN ({private_placeholders}) {joined_site_clause}
+                GROUP BY x.site_id, x.path, x.ua_family
+                HAVING SUM(x.requests-x.asset_requests)>0
+                ORDER BY requests DESC, agent
+                """,
+                agent_parameters,
+            )
+        ]
+        agent_totals: dict[str, int] = defaultdict(int)
+        for row in agent_rows:
+            if (row["site_id"], row["path"]) in page_ids:
+                agent_totals[row["agent"]] += row["requests"]
+        selected_agents = [
+            agent for agent, _ in sorted(
+                agent_totals.items(), key=lambda item: (-item[1], item[0])
+            )[:8]
+        ]
+        agent_ids = {
+            agent: f"agent-{index}" for index, agent in enumerate(selected_agents)
+        }
+
+        endpoint_rows = conn.execute(
+            f"""
+            SELECT x.site_id, x.path, SUM(x.entrances) entrances,
+                   SUM(x.exits) exits
+            FROM daily_journey_endpoint x JOIN sites s ON s.id=x.site_id
+            WHERE x.day BETWEEN ? AND ?
+              AND s.name NOT IN ({private_placeholders}) {joined_site_clause}
+            GROUP BY x.site_id, x.path
+            """,
+            common_parameters,
+        )
+        for row in endpoint_rows:
+            key = (row["site_id"], row["path"])
+            if key in page_details:
+                page_details[key]["entrances"] = row["entrances"]
+                page_details[key]["exits"] = row["exits"]
+
+        transition_rows = [
+            dict(row)
+            for row in conn.execute(
+                f"""
+                SELECT x.site_id, x.from_path, x.to_path,
+                       SUM(x.transitions) transitions
+                FROM daily_journey_transition x JOIN sites s ON s.id=x.site_id
+                WHERE x.day BETWEEN ? AND ?
+                  AND s.name NOT IN ({private_placeholders}) {joined_site_clause}
+                GROUP BY x.site_id, x.from_path, x.to_path
+                HAVING SUM(x.transitions)>0
+                ORDER BY transitions DESC, x.from_path, x.to_path
+                """,
+                common_parameters,
+            )
+        ]
+
+    edges = []
+    for row in referral_rows:
+        page_key = (row["site_id"], row["path"])
+        if page_key not in page_ids:
+            continue
+        details = page_details[page_key]
+        details["referrals"] += row["requests"]
+        details.setdefault("source_names", set()).add(row["source"])
+        if row["source"] in source_ids:
+            edges.append({
+                "kind": "referral", "from": source_ids[row["source"]],
+                "to": page_ids[page_key], "weight": row["requests"],
+            })
+    for details in page_details.values():
+        details["sources"] = len(details.pop("source_names", set()))
+
+    for row in agent_rows:
+        page_key = (row["site_id"], row["path"])
+        if page_key not in page_ids:
+            continue
+        details = page_details[page_key]
+        details["ai_requests"] += row["requests"]
+        details.setdefault("agent_names", set()).add(row["agent"])
+        if row["agent"] in agent_ids:
+            edges.append({
+                "kind": "ai", "from": agent_ids[row["agent"]],
+                "to": page_ids[page_key], "weight": row["requests"],
+            })
+    for details in page_details.values():
+        details["agents"] = len(details.pop("agent_names", set()))
+
+    for row in transition_rows:
+        from_key = (row["site_id"], row["from_path"])
+        to_key = (row["site_id"], row["to_path"])
+        if from_key not in page_ids or to_key not in page_ids:
+            continue
+        edges.append({
+            "kind": "journey", "from": page_ids[from_key],
+            "to": page_ids[to_key], "weight": row["transitions"],
+        })
+        page_details[from_key]["transitions_out"] += row["transitions"]
+        page_details[to_key]["transitions_in"] += row["transitions"]
+
+    nodes = [
+        {
+            "id": details["id"], "kind": "page", "label": details["path"],
+            "site": details["site"], "path": details["path"],
+            "weight": details["requests"],
+        }
+        for details in page_details.values()
+    ]
+    nodes.extend({
+        "id": source_ids[source], "kind": "source", "label": source,
+        "source": source, "weight": source_totals[source],
+    } for source in selected_sources)
+    for agent in selected_agents:
+        provider, purpose = AI_AGENTS[agent]
+        nodes.append({
+            "id": agent_ids[agent], "kind": "ai", "label": agent,
+            "agent": agent, "provider": provider, "purpose": purpose,
+            "weight": agent_totals[agent],
+        })
+    page_output = []
+    for details in page_details.values():
+        details.pop("site_id", None)
+        page_output.append(details)
+    return jsonify({
+        "scope": {"site": site["name"] if site else None},
+        "from": start, "to": end,
+        "privacy": {
+            "protected": False,
+            "excluded_sites": list(INDIVIDUAL_ACTIVITY_PRIVATE_SITES),
+        },
+        "totals": {
+            "pages": len(page_output), "sources": len(source_totals),
+            "mapped_sources": len(selected_sources),
+            "ai_agents": len(selected_agents), "connections": len(edges),
+            "page_requests": sum(row["requests"] for row in page_output),
+        },
+        "nodes": nodes, "edges": edges, "pages": page_output,
+    })
+
+
 @api_bp.get("/site/<path:name>/countries")
 @login_required
 def countries(name: str):
