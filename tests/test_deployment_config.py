@@ -50,6 +50,18 @@ class DeploymentConfigTests(unittest.TestCase):
         ).group("body")
         self.assertIn("$request_time", shared_format)
 
+    def test_production_csp_has_no_inline_dashboard_styles(self):
+        javascript = (ROOT / "webstats/static/dashboard.js").read_text(
+            encoding="utf-8"
+        )
+        self.assertNotIn('style="', javascript)
+
+    def test_chronicle_service_has_a_hard_runtime_limit(self):
+        unit = (ROOT / "deploy/webstats-chronicle.service").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("TimeoutStartSec=120", unit)
+
     def test_app_config_includes_ad_fontes_and_excludes_private_apps(self):
         text = (ROOT / "config.example.toml").read_text(encoding="utf-8")
         configured = set(re.findall(r'^name = "([^"]+)"$', text, re.MULTILINE))

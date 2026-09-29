@@ -5,6 +5,7 @@
   const fmt = new Intl.NumberFormat();
   const colors = ["#6ee7c7", "#61a9ff", "#a78bfa", "#f5c66b", "#ff7a8a", "#5eead4", "#fb923c"];
   const charts = {};
+  const activeRequests = new Map();
   const serverToday = document.body.dataset.serverToday || localDate(new Date());
   const defaultDays = Number(document.body.dataset.defaultDays) || 7;
   const initialState = stateFromUrl();
@@ -173,17 +174,28 @@
   }
 
   async function api(url) {
-    const response = await fetch(url, { headers: { Accept: "application/json" } });
-    if (response.status === 401) {
-      window.location.assign("/login");
-      throw new Error("Authentication required");
+    const requestKey = new URL(url, window.location.origin).pathname;
+    activeRequests.get(requestKey)?.abort();
+    const controller = new AbortController();
+    activeRequests.set(requestKey, controller);
+    try {
+      const response = await fetch(url, {
+        headers: { Accept: "application/json" }, signal: controller.signal,
+      });
+      if (response.status === 401) {
+        window.location.assign("/login");
+        throw new Error("Authentication required");
+      }
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.error || `Request failed with ${response.status}`);
+      return body;
+    } finally {
+      if (activeRequests.get(requestKey) === controller) activeRequests.delete(requestKey);
     }
-    const body = await response.json();
-    if (!response.ok) throw new Error(body.error || `Request failed with ${response.status}`);
-    return body;
   }
 
   function showError(error) {
+    if (error?.name === "AbortError") return;
     const box = document.querySelector("#page-error");
     if (!box) return;
     box.textContent = error.message || String(error);
@@ -284,7 +296,19 @@
   function escapeHtml(value) {
     const node = document.createElement("span");
     node.textContent = value ?? "";
-    return node.innerHTML;
+    return node.innerHTML.replaceAll('"', "&quot;").replaceAll("'", "&#39;");
+  }
+
+  function applyDynamicStyles(root) {
+    root.querySelectorAll("[data-css-width]").forEach(node => {
+      node.style.width = `${Number(node.dataset.cssWidth)}%`;
+    });
+    root.querySelectorAll("[data-css-height]").forEach(node => {
+      node.style.height = `${Number(node.dataset.cssHeight)}%`;
+    });
+    root.querySelectorAll("[data-stroke-width]").forEach(node => {
+      node.style.strokeWidth = node.dataset.strokeWidth;
+    });
   }
 
   function updateChart(name, canvas, config) {
@@ -982,8 +1006,10 @@
         const country = event.country ? ` · ${countryFlag(event.country)} ${event.country}` : "";
         return `<li class="inbox-event${unreadClass}"><span class="event-marker ${escapeHtml(presentation)}"></span><div class="inbox-event-copy"><div class="inbox-event-top"><span class="inbox-category ${escapeHtml(event.category)}">${escapeHtml(event.category)}</span><time datetime="${escapeHtml(new Date(event.occurred_at * 1000).toISOString())}">${escapeHtml(new Date(event.occurred_at * 1000).toLocaleString())}</time></div><a href="${escapeHtml(href)}">${escapeHtml(label)}</a><p>${escapeHtml(detail)}</p><small>${escapeHtml(event.site)}${escapeHtml(country)}</small></div></li>`;
       }).join("") : '<li class="empty">Nothing landed in this category and date range.</li>';
-      if (data.to === serverToday) writeInboxSeenAt(data.generated_at);
-      updateInboxCount(0);
+      if (data.to === serverToday && !inboxCategory && !scopeSite) {
+        writeInboxSeenAt(data.generated_at);
+        updateInboxCount(0);
+      }
     } catch (error) { showError(error); }
   }
 
@@ -1064,7 +1090,7 @@
       const middleX = (from.x + to.x) / 2;
       const middleY = (from.y + to.y) / 2 + bend;
       const width = Math.min(6, 1 + Math.log2(edge.weight + 1));
-      return `<path class="galaxy-edge ${escapeHtml(edge.kind)}" aria-hidden="true" d="M ${from.x.toFixed(1)} ${from.y.toFixed(1)} Q ${middleX.toFixed(1)} ${middleY.toFixed(1)} ${to.x.toFixed(1)} ${to.y.toFixed(1)}" style="stroke-width:${width.toFixed(1)}" marker-end="url(#arrow-${escapeHtml(edge.kind)})"></path>`;
+      return `<path class="galaxy-edge ${escapeHtml(edge.kind)}" aria-hidden="true" d="M ${from.x.toFixed(1)} ${from.y.toFixed(1)} Q ${middleX.toFixed(1)} ${middleY.toFixed(1)} ${to.x.toFixed(1)} ${to.y.toFixed(1)}" data-stroke-width="${width.toFixed(1)}" marker-end="url(#arrow-${escapeHtml(edge.kind)})"></path>`;
     }).join("");
     const nodeSvg = visibleNodes.map(node => {
       const position = positions.get(node.id);
@@ -1078,6 +1104,7 @@
       return `<a href="${escapeHtml(href)}" role="link" tabindex="0" aria-label="${escapeHtml(description)}"><g class="galaxy-node ${escapeHtml(node.kind)}" transform="translate(${position.x.toFixed(1)} ${position.y.toFixed(1)})"><circle r="${radius.toFixed(1)}"></circle><text y="${(radius + 14).toFixed(1)}" text-anchor="middle">${escapeHtml(shortLabel(node.label))}</text><title>${escapeHtml(description)}</title></g></a>`;
     }).join("");
     target.innerHTML = `<svg class="galaxy-svg" viewBox="0 0 1120 680" aria-label="Page Galaxy relationship map"><title>Page Galaxy relationship map</title><defs><marker id="arrow-referral" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z"></path></marker><marker id="arrow-journey" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z"></path></marker><marker id="arrow-ai" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z"></path></marker></defs>${edgeSvg}${nodeSvg}</svg>`;
+    applyDynamicStyles(target);
   }
 
   async function loadGalaxy() {
@@ -1310,9 +1337,33 @@
       const level = row.visitor_days === 0 || maximum === 0 ? 0 : Math.max(1, Math.ceil(4 * row.visitor_days / maximum));
       const description = `${row.day}: ${fmt.format(row.visitor_days)} visitor-days, ${fmt.format(row.requests)} requests`;
       const classes = ["calendar-day", `level-${level}`, row.future ? "future" : "", recordDays.has(row.day) ? "record-day" : ""].filter(Boolean).join(" ");
-      return `<button type="button" class="${classes}" role="gridcell" aria-label="${escapeHtml(description)}" title="${escapeHtml(description)}"></button>`;
+      return `<button type="button" class="${classes}" role="gridcell" tabindex="-1" data-calendar-day="${escapeHtml(row.day)}" aria-label="${escapeHtml(description)}" title="${escapeHtml(description)}"></button>`;
     });
     grid.innerHTML = [...blanks, ...cells].join("");
+    const dayCells = [...grid.querySelectorAll(".calendar-day:not(.future)")];
+    const initialCell = dayCells.find(cell => cell.dataset.calendarDay === serverToday)
+      || dayCells.at(-1);
+    if (initialCell) initialCell.tabIndex = 0;
+    grid.onkeydown = event => {
+      const current = event.target.closest(".calendar-day");
+      if (!current || !dayCells.includes(current)) return;
+      const deltas = {
+        ArrowUp: -1, ArrowDown: 1, ArrowLeft: -7, ArrowRight: 7,
+      };
+      let targetIndex;
+      if (event.key === "Home") targetIndex = 0;
+      else if (event.key === "End") targetIndex = dayCells.length - 1;
+      else if (event.key in deltas) {
+        targetIndex = Math.min(
+          dayCells.length - 1,
+          Math.max(0, dayCells.indexOf(current) + deltas[event.key]),
+        );
+      } else return;
+      event.preventDefault();
+      current.tabIndex = -1;
+      dayCells[targetIndex].tabIndex = 0;
+      dayCells[targetIndex].focus();
+    };
     // Use real grid cells instead of inline grid-column styles. Production's
     // strict CSP rejects style attributes, which previously made all labels
     // auto-flow into the first twelve columns.
@@ -1369,7 +1420,9 @@
       ].join("");
 
       const next = data.milestones.next;
-      document.querySelector("#next-milestone").innerHTML = `<strong>${fmt.format(data.totals.visitor_days)} of ${fmt.format(next)} visitor-days</strong><div class="milestone-progress" aria-label="${escapeHtml(String(data.milestones.progress))}% toward next milestone"><span style="width:${Math.min(100, data.milestones.progress)}%"></span></div><small class="muted">Next milestone · ${data.milestones.progress}% complete</small>`;
+      const milestone = document.querySelector("#next-milestone");
+      milestone.innerHTML = `<strong>${fmt.format(data.totals.visitor_days)} of ${fmt.format(next)} visitor-days</strong><div class="milestone-progress" aria-label="${escapeHtml(String(data.milestones.progress))}% toward next milestone"><span data-css-width="${Math.min(100, data.milestones.progress)}"></span></div><small class="muted">Next milestone · ${data.milestones.progress}% complete</small>`;
+      applyDynamicStyles(milestone);
       const reached = [...data.milestones.reached].reverse();
       document.querySelector("#milestone-list").innerHTML = reached.length
         ? reached.slice(0, 8).map(item => `<li><strong>${fmt.format(item.value)} visitor-days</strong><time datetime="${escapeHtml(item.day)}">${escapeHtml(item.day)}</time></li>`).join("")
@@ -1445,7 +1498,7 @@
         : `<strong>${escapeHtml(text)}</strong>`;
       const direction = row.change > 0 ? "up" : "down";
       const width = Math.max(5, Math.round(100 * Math.abs(row.change) / maximum));
-      return `<article class="change-driver ${direction}"><div class="change-driver-copy">${title}<small>${escapeHtml(row.site || "All sites")} · ${fmt.format(row.previous_requests)} → ${fmt.format(row.requests)}</small></div><span class="change-value">${signed(row.change)}</span><div class="change-track"><span style="width:${width}%"></span></div></article>`;
+      return `<article class="change-driver ${direction}"><div class="change-driver-copy">${title}<small>${escapeHtml(row.site || "All sites")} · ${fmt.format(row.previous_requests)} → ${fmt.format(row.requests)}</small></div><span class="change-value">${signed(row.change)}</span><div class="change-track"><span data-css-width="${width}"></span></div></article>`;
     }).join("");
   }
 
@@ -1505,6 +1558,7 @@
         row => pageStoryHref(row, data.window.from, data.window.to),
         "No error movement in these windows."
       );
+      document.querySelectorAll(".change-driver-list").forEach(applyDynamicStyles);
     } catch (error) { showError(error); }
   }
 
@@ -1517,7 +1571,7 @@
     return `<div class="episode-timeline" role="img" aria-label="Daily traffic around this attention episode">${episode.timeline.map(item => {
       const height = Math.max(4, Math.round(100 * item.requests / maximum));
       const title = `${item.day}: ${fmt.format(item.requests)} request${item.requests === 1 ? "" : "s"}${item.peak ? " (peak)" : ""}`;
-      return `<span class="episode-day ${escapeHtml(item.phase)}${item.peak ? " peak" : ""}" style="height:${height}%" title="${escapeHtml(title)}"><i></i></span>`;
+      return `<span class="episode-day ${escapeHtml(item.phase)}${item.peak ? " peak" : ""}" data-css-height="${height}" title="${escapeHtml(title)}"><i></i></span>`;
     }).join("")}</div><div class="episode-timeline-axis"><span>${escapeHtml(episode.timeline[0]?.day || episode.start)}</span><span>Peak ${escapeHtml(episode.peak_day)}</span><span>${escapeHtml(episode.timeline.at(-1)?.day || episode.end)}</span></div>`;
   }
 
@@ -1596,6 +1650,7 @@
       document.querySelector("#episodes-list").innerHTML = data.episodes.length
         ? data.episodes.map(episodeCard).join("")
         : '<div class="episode-empty"><strong>The traffic stayed inside its ordinary range.</strong><p>Try a longer window or select another site. Smaller changes still appear in the Change Engine.</p></div>';
+      applyDynamicStyles(document.querySelector("#episodes-list"));
     } catch (error) { showError(error); }
   }
 
@@ -1645,10 +1700,12 @@
       const privacy = document.querySelector("#reliability-privacy");
       privacy.classList.toggle("hidden", !data.privacy.protected);
       privacy.textContent = data.privacy.protected ? data.narrative : "";
-      document.querySelector("#timing-coverage").innerHTML = `<div><span style="width:${Math.min(100, summary.timing_coverage_percent)}%"></span></div><p><strong>${escapeHtml(`${summary.timing_coverage_percent}%`)}</strong> timing coverage · ${fmt.format(summary.timed_requests)} of ${fmt.format(summary.requests)} successful page responses</p>`;
+      const timingCoverage = document.querySelector("#timing-coverage");
+      timingCoverage.innerHTML = `<div><span data-css-width="${Math.min(100, summary.timing_coverage_percent)}"></span></div><p><strong>${escapeHtml(`${summary.timing_coverage_percent}%`)}</strong> timing coverage · ${fmt.format(summary.timed_requests)} of ${fmt.format(summary.requests)} successful page responses</p>`;
+      applyDynamicStyles(timingCoverage);
       document.querySelector("#reliability-metrics").innerHTML = [
         metric("Average response", latencyLabel(summary.average_ms)),
-        metric("p95 response", latencyLabel(summary.p95_ms)),
+        metric("Typical daily p95", latencyLabel(summary.p95_ms)),
         metric("Slowest response", latencyLabel(summary.max_ms)),
         metric("Average payload", compactBytes(summary.average_bytes)),
         metric("Application 4xx", fmt.format(summary.app_4xx)),

@@ -11,6 +11,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urljoin, urlsplit
 from urllib.request import Request, build_opener
 from xml.etree import ElementTree
+import zlib
 
 from .parser import ASSET_EXTENSIONS
 from .robots import _SameSiteRedirect
@@ -74,7 +75,7 @@ def _download_bytes(url: str, site: str, timeout: float) -> dict:
             "http_status": error.code,
             "body": b"",
         }
-    except (OSError, URLError, TimeoutError, EOFError) as error:
+    except (OSError, URLError, TimeoutError, EOFError, zlib.error) as error:
         return {
             "url": url, "status": "unavailable",
             "detail": type(error).__name__, "body": b"",

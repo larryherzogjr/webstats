@@ -10,6 +10,7 @@ Group=webstats
 WorkingDirectory=/opt/webstats
 Environment=PYTHONDONTWRITEBYTECODE=1
 ExecStart=/opt/webstats/.venv/bin/python -m webstats.chronicle --config /etc/webstats/config.toml
+TimeoutStartSec=120
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true

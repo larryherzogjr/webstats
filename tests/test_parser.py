@@ -44,10 +44,14 @@ class ParserTests(unittest.TestCase):
 
     def test_explicit_format(self):
         compiled = compile_log_format(COMBINED + " $request_time")
-        line = (FIXTURES / "combined.log").read_text().splitlines()[0] + " 0.013"
+        legacy = (FIXTURES / "combined.log").read_text().splitlines()[0]
+        line = legacy + " 0.013"
         row = parse_line(line, compiled, "example.com", "secret")
         self.assertEqual(row.path, "/essays/hello")
         self.assertEqual(row.request_time_ms, 13)
+        self.assertIsNone(
+            parse_line(legacy, compiled, "example.com", "secret").request_time_ms
+        )
 
     def test_host_format_accepts_timed_and_legacy_lines(self):
         legacy = (FIXTURES / "combined_host.log").read_text().strip()

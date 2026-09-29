@@ -19,6 +19,10 @@ body { margin: 0; min-height: 100vh; background: radial-gradient(circle at 80% -
 a { color: inherit; }
 button, input, select { font: inherit; }
 button { cursor: pointer; }
+:where(a, button, input, select, summary):focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
 
 .topbar { height: 76px; padding: 0 clamp(16px, 3vw, 48px); border-bottom: 1px solid rgba(143, 162, 186, .18); display: flex; align-items: center; justify-content: space-between; backdrop-filter: blur(20px); background: rgba(8, 16, 29, .78); position: sticky; top: 0; z-index: 20; }
 .brand { display: flex; flex: 0 0 auto; align-items: center; gap: 12px; text-decoration: none; }

@@ -729,7 +729,29 @@ class ApiTests(unittest.TestCase):
             handle.write(
                 line("203.0.113.32", "/atom.xml", ua="FreshRSS/1.24.3")
             )
+            handle.write(
+                line(
+                    "203.0.113.30",
+                    "/rss.xml",
+                    ua=(
+                        "Inoreader/1.0 "
+                        "(+http://www.inoreader.com/feed-fetcher; 3 subscribers; )"
+                    ),
+                )
+            )
         ingest_once(self.config)
+        with connect(self.config.storage.db_path) as conn:
+            site_id = site_id_map(conn)["example.com"]
+            conn.execute(
+                """
+                INSERT INTO daily_feed_reader(
+                    site_id, day, path, reader, requests,
+                    reported_subscribers, first_seen, last_seen
+                ) VALUES (?, '2026-09-01', '/old.xml', 'OldReader', 1, 99, 1, 1)
+                """,
+                (site_id,),
+            )
+            conn.commit()
         self.authenticate()
 
         body = self.client.get(
@@ -741,14 +763,14 @@ class ApiTests(unittest.TestCase):
                 "reported_subscribers": 3,
                 "subscriber_change": 0,
                 "readers": 3,
-                "feeds": 2,
-                "requests": 3,
+                "feeds": 3,
+                "requests": 4,
                 "reporting_feeds": 1,
             },
         )
         self.assertEqual(
             body["series"],
-            [{"bucket": "2026-09-28", "requests": 3, "reported_subscribers": 3}],
+            [{"bucket": "2026-09-28", "requests": 4, "reported_subscribers": 3}],
         )
         sightings = {row["reader"]: row for row in body["sightings"]}
         self.assertEqual(sightings["Inoreader"]["latest_subscribers"], 3)
@@ -760,6 +782,11 @@ class ApiTests(unittest.TestCase):
         ).get_json()
         self.assertEqual(scoped["scope"], {"site": "example.com"})
         self.assertEqual(scoped["totals"], body["totals"])
+        extended = self.client.get(
+            "/api/feed-readers?from=2026-09-01&to=2026-09-28"
+        ).get_json()
+        self.assertEqual(extended["totals"]["reported_subscribers"], 3)
+        self.assertEqual(extended["totals"]["reporting_feeds"], 1)
         self.assertEqual(
             self.client.get(
                 "/api/feed-readers?site=unknown.example"

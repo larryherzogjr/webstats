@@ -1,7 +1,13 @@
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
+import zlib
 
-from webstats.sitemaps import _discover_site, parse_sitemap, sitemap_declarations
+from webstats.sitemaps import (
+    _discover_site,
+    _download_bytes,
+    parse_sitemap,
+    sitemap_declarations,
+)
 
 
 class SitemapTests(unittest.TestCase):
@@ -63,6 +69,25 @@ Sitemap: https://other.example/map.xml
         self.assertEqual(result["status"], "available")
         self.assertEqual([row["path"] for row in result["pages"]], ["/one"])
         self.assertEqual(len(result["documents"]), 2)
+
+    def test_corrupt_gzip_is_reported_as_unavailable(self):
+        response = MagicMock()
+        response.read.return_value = b"not-gzip"
+        response.headers = {"Content-Encoding": "gzip"}
+        response.geturl.return_value = "https://example.com/sitemap.xml.gz"
+        opener = MagicMock()
+        opener.open.return_value.__enter__.return_value = response
+        compressed = MagicMock()
+        compressed.__enter__.return_value.read.side_effect = zlib.error("bad stream")
+        with (
+            patch("webstats.sitemaps.build_opener", return_value=opener),
+            patch("webstats.sitemaps.GzipFile", return_value=compressed),
+        ):
+            result = _download_bytes(
+                "https://example.com/sitemap.xml.gz", "example.com", 1
+            )
+        self.assertEqual(result["status"], "unavailable")
+        self.assertEqual(result["detail"], "error")
 
 
 if __name__ == "__main__":

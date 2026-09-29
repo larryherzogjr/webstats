@@ -38,7 +38,7 @@ class ChronicleTests(unittest.TestCase):
         }
 
     @staticmethod
-    def inventory(pages, status="available"):
+    def inventory(pages, status="available", errors=None, limited=False):
         def fetch(names, robots):
             return {
                 name: {
@@ -50,7 +50,7 @@ class ChronicleTests(unittest.TestCase):
                             "lastmod": lastmod, "sitemap": f"https://{name}/sitemap.xml",
                         } for path, lastmod in pages
                     ],
-                    "errors": [], "limited": False,
+                    "errors": list(errors or []), "limited": limited,
                 } for name in names
             }
         return fetch
@@ -126,6 +126,89 @@ class ChronicleTests(unittest.TestCase):
                 "SELECT state FROM chronicle_pages WHERE path='/safe'"
             ).fetchone()[0]
         self.assertEqual(state, "published")
+
+    def test_partial_inventory_never_removes_or_probes_known_pages(self):
+        scan(
+            self.config, now=1_790_640_000, robots_fetcher=self.robots(),
+            sitemap_fetcher=self.inventory([("/safe", None), ("/other", None)]),
+        )
+        scan(
+            self.config, now=1_790_726_400, robots_fetcher=self.robots(),
+            sitemap_fetcher=self.inventory(
+                [("/safe", None)],
+                errors=[{"url": "https://example.com/child.xml", "status": "unavailable"}],
+            ),
+            page_probe=lambda url, site: self.fail("partial inventory was probed"),
+        )
+        with connect(self.config.storage.db_path, readonly=True) as conn:
+            state = conn.execute(
+                "SELECT state FROM chronicle_pages WHERE path='/other'"
+            ).fetchone()[0]
+        self.assertEqual(state, "published")
+
+    def test_probe_network_failure_preserves_page_state(self):
+        scan(
+            self.config, now=1_790_640_000, robots_fetcher=self.robots(),
+            sitemap_fetcher=self.inventory([("/safe", None)]),
+        )
+        scan(
+            self.config, now=1_790_726_400, robots_fetcher=self.robots(),
+            sitemap_fetcher=self.inventory([]),
+            page_probe=lambda url, site: {"status": None, "redirect_to": None},
+        )
+        with connect(self.config.storage.db_path, readonly=True) as conn:
+            state = conn.execute(
+                "SELECT state, removed_at FROM chronicle_pages WHERE path='/safe'"
+            ).fetchone()
+            events = conn.execute(
+                "SELECT COUNT(*) FROM chronicle_events WHERE path='/safe'"
+            ).fetchone()[0]
+        self.assertEqual(tuple(state), ("published", None))
+        self.assertEqual(events, 0)
+
+    def test_robots_outage_is_not_a_policy_change(self):
+        scan(
+            self.config, now=1_790_640_000, robots_fetcher=self.robots(),
+            sitemap_fetcher=self.inventory([]),
+        )
+
+        def unavailable(names):
+            return {
+                name: {
+                    "site": name, "url": f"https://{name}/robots.txt",
+                    "status": "unavailable", "text": "",
+                }
+                for name in names
+            }
+
+        scan(
+            self.config, now=1_790_726_400, robots_fetcher=unavailable,
+            sitemap_fetcher=self.inventory([]),
+        )
+        with connect(self.config.storage.db_path, readonly=True) as conn:
+            changes = conn.execute(
+                "SELECT COUNT(*) FROM chronicle_events WHERE kind='robots_changed'"
+            ).fetchone()[0]
+        self.assertEqual(changes, 0)
+
+    def test_removal_probe_does_not_hold_writer_lock(self):
+        scan(
+            self.config, now=1_790_640_000, robots_fetcher=self.robots(),
+            sitemap_fetcher=self.inventory([("/safe", None)]),
+        )
+
+        def probe(_url, _site):
+            with connect(self.config.storage.db_path) as other:
+                other.execute(
+                    "INSERT INTO ingest_runs(started_at, status) VALUES (1, 'ok')"
+                )
+                other.commit()
+            return {"status": 200, "redirect_to": None}
+
+        scan(
+            self.config, now=1_790_726_400, robots_fetcher=self.robots(),
+            sitemap_fetcher=self.inventory([]), page_probe=probe,
+        )
 
     def test_unlisted_page_is_monitored_for_later_disappearance(self):
         scan(

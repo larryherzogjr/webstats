@@ -65,14 +65,25 @@ def compile_log_format(value: str) -> CompiledLogFormat:
     seen = set()
     token_re = re.compile(r"\$\{?([A-Za-z0-9_]+)\}?")
     for match in token_re.finditer(source):
-        pieces.append(re.escape(source[position : match.start()]))
         name = match.group(1)
         if name in seen:
             raise LogFormatError(f"Log variable ${name} appears more than once")
         field_pattern = FIELD_PATTERNS.get(name)
-        if field_pattern is None:
+        literal = source[position : match.start()]
+        optional_trailing_time = (
+            name == "request_time"
+            and match.end() == len(source)
+            and literal.endswith(" ")
+        )
+        if optional_trailing_time:
+            pieces.append(re.escape(literal[:-1]))
+            pieces.append(r"(?: (?P<request_time>[\d.]+))?")
+            seen.add(name)
+        elif field_pattern is None:
+            pieces.append(re.escape(literal))
             pieces.append(r"[^\s\"]+" if not _inside_quotes(source, match.start()) else r"[^\"]*")
         else:
+            pieces.append(re.escape(literal))
             pieces.append(field_pattern)
             seen.add(name)
         position = match.end()

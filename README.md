@@ -118,7 +118,9 @@ Webstats records that reported number. Readers such as current Feedly identify
 their fetcher without promising a count, so Webstats shows the reader and its
 feed requests but labels the subscriber total as unreported. A shared fetch is
 not treated as one person, and repeated fetches are never used as a proxy for
-subscriber growth.
+subscriber growth. Subscriber reports are deduplicated by site and reader even
+when the service polls multiple feed paths; reports older than 14 days are not
+included in the current total.
 
 Link Atlas and the Change Engine use permanent daily aggregates, so they
 continue to work after raw-log retention expires without adding a migration or
@@ -140,7 +142,8 @@ and legacy untimed lines, so current and rotated logs can coexist safely.
 Successful human, non-asset GET requests feed permanent daily latency and
 response-size summaries. Latency naturally begins after the timed nginx format
 is installed; migration rebuilds response-size and error history from retained
-raw rows.
+raw rows. Multi-day p95 displays are explicitly labelled as sample-weighted
+daily percentiles rather than an exact percentile across the whole range.
 
 The AI Policy Observatory caches current public `robots.txt` responses in
 application memory for 15 minutes and compares those current rules with the
@@ -162,9 +165,11 @@ The Chronicle observer runs twice daily by default. It accepts only bounded,
 same-site HTTPS sitemap discovery. When a page leaves an available sitemap, it
 probes at most 64 removed URLs per site per run without following redirects, so
 it can distinguish a same-site redirect, HTTP 404/410 disappearance, and an
-unlisted page that remains reachable. An unavailable sitemap never causes a
-mass-removal event. Public inventory changes are retained for all configured
-sites.
+unlisted page that remains reachable. An unavailable, partial, capped, or
+otherwise errored sitemap never causes a mass-removal event. Probe network
+failures preserve the previous page state, and all origin requests finish
+before Chronicle takes SQLite's writer lock. Public inventory changes are
+retained for all configured sites.
 
 ## Fresh installation in 14 steps
 

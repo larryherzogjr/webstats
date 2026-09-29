@@ -123,6 +123,12 @@ def scan(
                 "ORDER BY captured_at DESC, id DESC LIMIT 1",
                 (site_id,),
             ).fetchone()
+            previous_policy = conn.execute(
+                "SELECT * FROM chronicle_snapshots "
+                "WHERE site_id=? AND robots_status='available' "
+                "ORDER BY captured_at DESC, id DESC LIMIT 1",
+                (site_id,),
+            ).fetchone()
             policy_archived = conn.execute(
                 """
                 SELECT 1 FROM chronicle_snapshots
@@ -131,6 +137,33 @@ def scan(
                 (site_id, policy.get("status", "unavailable"), robots_digest),
             ).fetchone()
             archived_robots_text = "" if policy_archived else robots_text
+            known = {
+                row["path"]: row for row in conn.execute(
+                    "SELECT * FROM chronicle_pages WHERE site_id=?", (site_id,)
+                )
+            }
+            current_paths = {item["path"] for item in pages}
+            inventory_complete = (
+                inventory.get("status") == "available"
+                and not inventory.get("errors")
+                and not inventory.get("limited")
+            )
+            probe_results = []
+            if previous is not None and inventory_complete:
+                newly_removed = [
+                    row for path, row in known.items()
+                    if row["state"] == "published" and path not in current_paths
+                ]
+                monitored = [
+                    row for path, row in known.items()
+                    if row["state"] != "published" and path not in current_paths
+                ]
+                for old in (newly_removed + monitored)[:MAX_REMOVAL_PROBES]:
+                    # Network I/O happens before this site's first write, so a
+                    # slow origin never holds SQLite's writer lock.
+                    probe_results.append((old, page_probe(old["url"], name)))
+                    totals["probes"] += 1
+
             before_events = conn.total_changes
             cursor = conn.execute(
                 """
@@ -161,14 +194,16 @@ def scan(
                 )
             else:
                 if (
-                    previous["robots_status"] != policy.get("status")
-                    or previous["robots_digest"] != robots_digest
+                    policy.get("status") == "available"
+                    and previous_policy is not None
+                    and previous_policy["robots_digest"] != robots_digest
                 ):
                     _event(
                         conn, site_id=site_id, snapshot_id=snapshot_id,
                         captured_at=captured_at, day=scan_day, kind="robots_changed",
                         summary="robots.txt policy changed.",
-                        from_value=previous["robots_digest"], to_value=robots_digest,
+                        from_value=previous_policy["robots_digest"],
+                        to_value=robots_digest,
                     )
                 if previous["sitemap_status"] != inventory.get("status"):
                     _event(
@@ -182,12 +217,6 @@ def scan(
                         to_value=inventory.get("status", "unavailable"),
                     )
 
-            known = {
-                row["path"]: row for row in conn.execute(
-                    "SELECT * FROM chronicle_pages WHERE site_id=?", (site_id,)
-                )
-            }
-            current_paths = {item["path"] for item in pages}
             baseline = previous is None
             for item in pages:
                 old = known.get(item["path"])
@@ -233,21 +262,14 @@ def scan(
                             from_value=previous_lastmod, to_value=item["lastmod"],
                         )
 
-            # A failed/absent inventory must never make every known page look removed.
-            if previous is not None and inventory.get("status") == "available":
-                newly_removed = [
-                    row for path, row in known.items()
-                    if row["state"] == "published" and path not in current_paths
-                ]
-                monitored = [
-                    row for path, row in known.items()
-                    if row["state"] != "published" and path not in current_paths
-                ]
-                for old in (newly_removed + monitored)[:MAX_REMOVAL_PROBES]:
-                    result = page_probe(old["url"], name)
-                    totals["probes"] += 1
+            # Partial, failed, or capped inventories are observations, never
+            # evidence that missing pages were removed.
+            if previous is not None and inventory_complete:
+                for old, result in probe_results:
                     status = result.get("status")
                     redirect_to = result.get("redirect_to")
+                    if status is None:
+                        continue
                     if status in {301, 302, 303, 307, 308} and redirect_to:
                         kind, state = "redirected", "redirected"
                         target_path = urlsplit(redirect_to).path or "/"
@@ -260,7 +282,7 @@ def scan(
                         summary = (
                             "The page is reachable again but remains outside the sitemap."
                             if old["state"] in {"redirected", "disappeared"}
-                            else "The page left the sitemap but remains reachable or could not be verified."
+                            else "The page left the sitemap but remains reachable."
                         )
                     changed = (
                         old["state"] != state
@@ -286,7 +308,7 @@ def scan(
                             to_value=redirect_to or (str(status) if status else state),
                         )
             totals["events"] += max(0, conn.total_changes - before_events - 1)
-        conn.commit()
+            conn.commit()
 
     # Count actual event rows rather than page-state writes.
     with connect(config.storage.db_path, readonly=True) as conn:

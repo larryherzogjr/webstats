@@ -38,6 +38,7 @@ SEARCH_CRAWLERS = {
     "DuckDuckBot": ("DuckDuckGo", "Search indexing"),
     "Applebot": ("Apple", "Search and assistant indexing"),
 }
+FEED_REPORT_FRESHNESS_DAYS = 14
 
 
 def _conn() -> sqlite3.Connection:
@@ -1803,7 +1804,7 @@ def performance_reliability():
                 "kind": "slow-page", "site": site, "path": path,
                 "value": current["p95_ms"], "previous": prior["p95_ms"],
                 "change": latency_change,
-                "explanation": "95th-percentile response time reached at least one second.",
+                "explanation": "The sample-weighted daily p95 response time reached at least one second.",
             })
         if (
             current["requests"] >= 3 and prior["requests"] >= 3
@@ -2048,6 +2049,9 @@ def feed_readers():
         ]
 
     sightings: dict[tuple[str, str, str], dict[str, Any]] = {}
+    daily_reports: dict[tuple[str, str, str], int] = {}
+    first_reports: dict[tuple[str, str], tuple[str, int]] = {}
+    latest_reports: dict[tuple[str, str], tuple[str, int]] = {}
     daily = {
         day: {"bucket": day, "requests": 0, "reported_subscribers": None}
         for day in _day_buckets(start, end)
@@ -2077,9 +2081,24 @@ def feed_readers():
                 item["first_reported_subscribers"] = count
             item["latest_subscribers"] = count
             item["peak_subscribers"] = max(item["peak_subscribers"] or 0, count)
-            current = daily[row["day"]]["reported_subscribers"]
-            daily[row["day"]]["reported_subscribers"] = (current or 0) + count
+            daily_key = (row["day"], row["site"], row["reader"])
+            daily_reports[daily_key] = max(daily_reports.get(daily_key, 0), count)
+            reader_key = (row["site"], row["reader"])
+            first_report = first_reports.get(reader_key)
+            if first_report is None or row["day"] < first_report[0]:
+                first_reports[reader_key] = (row["day"], count)
+            elif row["day"] == first_report[0]:
+                first_reports[reader_key] = (row["day"], max(first_report[1], count))
+            latest_report = latest_reports.get(reader_key)
+            if latest_report is None or row["day"] > latest_report[0]:
+                latest_reports[reader_key] = (row["day"], count)
+            elif row["day"] == latest_report[0]:
+                latest_reports[reader_key] = (row["day"], max(latest_report[1], count))
         daily[row["day"]]["requests"] += row["requests"]
+
+    for (day, _site, _reader), count in daily_reports.items():
+        current = daily[day]["reported_subscribers"]
+        daily[day]["reported_subscribers"] = (current or 0) + count
 
     rows = sorted(
         sightings.values(),
@@ -2088,13 +2107,17 @@ def feed_readers():
             -item["last_seen"], item["site"], item["path"], item["reader"],
         ),
     )
-    latest = sum(
-        item["latest_subscribers"] for item in rows
-        if item["latest_subscribers"] is not None
-    )
+    active_cutoff = (
+        date.fromisoformat(end) - timedelta(days=FEED_REPORT_FRESHNESS_DAYS - 1)
+    ).isoformat()
+    active_reports = {
+        key: value for key, value in latest_reports.items()
+        if value[0] >= active_cutoff
+    }
+    latest = sum(value[1] for value in active_reports.values())
     first = sum(
-        item["first_reported_subscribers"] for item in rows
-        if item["first_reported_subscribers"] is not None
+        first_reports[key][1] for key in active_reports
+        if key in first_reports
     )
     totals = {
         "reported_subscribers": latest,
@@ -2102,7 +2125,7 @@ def feed_readers():
         "readers": len({item["reader"] for item in rows}),
         "feeds": len({(item["site"], item["path"]) for item in rows}),
         "requests": sum(item["requests"] for item in rows),
-        "reporting_feeds": sum(item["latest_subscribers"] is not None for item in rows),
+        "reporting_feeds": len(active_reports),
     }
     return jsonify({
         "from": start,
@@ -2233,26 +2256,33 @@ def _feed_snapshot(
     conn: sqlite3.Connection, through: date, site_id: Optional[int] = None
 ) -> dict[str, int]:
     site_clause = "AND f.site_id=?" if site_id is not None else ""
-    parameters: tuple[Any, ...] = (through.isoformat(),)
+    freshness_start = through - timedelta(days=FEED_REPORT_FRESHNESS_DAYS - 1)
+    parameters: tuple[Any, ...] = (
+        freshness_start.isoformat(), through.isoformat(),
+    )
     if site_id is not None:
         parameters += (site_id,)
     rows = conn.execute(
         f"""
         SELECT s.name site, f.path, f.reader, f.day, f.reported_subscribers
         FROM daily_feed_reader f JOIN sites s ON s.id=f.site_id
-        WHERE f.day<=? AND f.reported_subscribers IS NOT NULL
+        WHERE f.day BETWEEN ? AND ? AND f.reported_subscribers IS NOT NULL
           {site_clause}
         ORDER BY f.day
         """,
         parameters,
     )
-    latest: dict[tuple[str, str, str], int] = {}
+    latest: dict[tuple[str, str], tuple[str, int]] = {}
     for row in rows:
-        latest[(row["site"], row["path"], row["reader"])] = row[
-            "reported_subscribers"
-        ]
+        key = (row["site"], row["reader"])
+        previous = latest.get(key)
+        count = row["reported_subscribers"]
+        if previous is None or row["day"] > previous[0]:
+            latest[key] = (row["day"], count)
+        elif row["day"] == previous[0]:
+            latest[key] = (row["day"], max(previous[1], count))
     return {
-        "reported_subscribers": sum(latest.values()),
+        "reported_subscribers": sum(item[1] for item in latest.values()),
         "reporting_feeds": len(latest),
     }
 
