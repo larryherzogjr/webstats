@@ -1,0 +1,11 @@
+[Unit]
+Description=Check daily for the monthly DB-IP Country Lite release
+
+[Timer]
+OnCalendar=*-*-* 04:17:00
+Persistent=true
+RandomizedDelaySec=45m
+Unit=webstats-geoip-update.service
+
+[Install]
+WantedBy=timers.target

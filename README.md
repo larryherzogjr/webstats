@@ -56,7 +56,7 @@ actual access-log paths and format are confirmed.
 10. Test parsing against the new log:
    `sudo -u webstats /opt/webstats/.venv/bin/python /opt/webstats/scripts/backfill.py --config /etc/webstats/config.toml`.
 11. Install the units:
-    `sudo cp /opt/webstats/deploy/webstats*.service /opt/webstats/deploy/webstats-ingest.timer /etc/systemd/system/`
+    `sudo cp /opt/webstats/deploy/webstats*.service /opt/webstats/deploy/webstats*.timer /etc/systemd/system/`
     then `sudo systemctl daemon-reload`.
 12. Start ingestion and the dashboard:
     `sudo systemctl enable --now webstats-ingest.timer webstats.service`.
@@ -94,6 +94,13 @@ the site page displays the attribution required by DB-IP's CC BY 4.0 license.
 Country lookup happens in memory during ingestion; Webstats still stores no raw
 IP addresses. Existing database rows cannot be enriched after the fact, but
 retained nginx logs can be reimported into a fresh database.
+
+After installing the `geoip` dependency and enabling GeoIP, install and enable
+`deploy/webstats-geoip-update.service` and
+`deploy/webstats-geoip-update.timer`. The daily timer downloads at most one
+database per monthly release, validates a known country lookup, and atomically
+replaces the active file. Daily checks allow an automatic retry if a new release
+is not yet available. No Webstats restart is needed after a database update.
 
 ## Development
 
@@ -161,6 +168,8 @@ not imported. Webstats history begins when the dedicated log is enabled.
 - Follow app logs: `journalctl -u webstats.service -f`.
 - Follow ingest logs: `journalctl -u webstats-ingest.service -f`.
 - Inspect timer state: `systemctl list-timers webstats-ingest.timer`.
+- Inspect GeoIP updates: `systemctl list-timers webstats-geoip-update.timer` and
+  `journalctl -u webstats-geoip-update.service`.
 - Change the password by rerunning `scripts/set_password.py`.
 
 The ingest state file is updated atomically after each configured log. Missing

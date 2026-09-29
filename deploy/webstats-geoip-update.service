@@ -1,0 +1,17 @@
+[Unit]
+Description=Update the Webstats DB-IP Country Lite database
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=webstats
+Group=webstats
+WorkingDirectory=/opt/webstats
+ExecStart=/opt/webstats/.venv/bin/python /opt/webstats/scripts/update_geoip.py
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+NoNewPrivileges=true
+ReadWritePaths=/var/lib/webstats
+UMask=0027
