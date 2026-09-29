@@ -105,6 +105,11 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(self.client.get("/live").status_code, 200)
         self.assertEqual(self.client.get("/health").status_code, 200)
         self.assertEqual(self.client.get("/site/not-configured.test").status_code, 404)
+        reliability = self.client.get("/reliability").get_data(as_text=True)
+        self.assertIn('class="nav-group active"', reliability)
+        self.assertIn('href="/reliability" aria-current="page"', reliability)
+        overview = self.client.get("/").get_data(as_text=True)
+        self.assertIn('class="nav-link active" href="/" aria-current="page"', overview)
 
     def test_login_throttle_uses_forwarded_client_address(self):
         first = {"X-Forwarded-For": "198.51.100.10"}

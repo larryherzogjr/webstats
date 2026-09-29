@@ -9,34 +9,73 @@
   {% block head %}{% endblock %}
 </head>
 <body data-page="{% block page_id %}{% endblock %}" data-server-today="{{ server_today|default('', true) }}"{% block body_data %}{% endblock %}>
+  {% set current_path = request.path %}
+  {% set overview_active = current_path == '/' or current_path.startswith('/site/') %}
+  {% set insights_active = current_path in ['/briefings', '/changes', '/episodes', '/almanac'] %}
+  {% set content_active = current_path in ['/content', '/chronicle', '/pulse', '/journeys', '/galaxy'] %}
+  {% set audience_active = current_path in ['/links', '/feed-readers', '/ai-crawlers', '/ai-policy'] %}
+  {% set operations_active = current_path in ['/reliability', '/errors', '/health'] %}
   <header class="topbar">
     <a class="brand" href="{{ url_for('views.overview') }}" aria-label="Webstats overview">
       <span class="brand-mark">W</span>
       <span><strong>Webstats</strong><small>Private traffic intelligence</small></span>
     </a>
-    <nav aria-label="Primary navigation">
-      <a href="{{ url_for('views.overview') }}">Overview</a>
-      <a class="inbox-nav-link" href="{{ url_for('views.inbox') }}">Inbox<span id="inbox-count" class="nav-count hidden"></span></a>
-      <a href="{{ url_for('views.briefings') }}">Briefings</a>
-      <a href="{{ url_for('views.changes') }}">Changes</a>
-      <a href="{{ url_for('views.episodes') }}">Episodes</a>
-      <a href="{{ url_for('views.content_observatory') }}">Content</a>
-      <a href="{{ url_for('views.chronicle') }}">Chronicle</a>
-      <a href="{{ url_for('views.pulse') }}">Pulse</a>
-      <a href="{{ url_for('views.reliability') }}">Reliability</a>
-      <a href="{{ url_for('views.errors') }}">Errors</a>
-      <a href="{{ url_for('views.journeys') }}">Paths</a>
-      <a href="{{ url_for('views.links') }}">Links</a>
-      <a href="{{ url_for('views.galaxy') }}">Galaxy</a>
-      <a href="{{ url_for('views.almanac') }}">Almanac</a>
-      <a href="{{ url_for('views.feed_readers') }}">Feeds</a>
-      <a href="{{ url_for('views.ai_crawlers') }}">AI crawlers</a>
-      <a href="{{ url_for('views.ai_policy') }}">AI policy</a>
-      <a href="{{ url_for('views.live') }}">Live</a>
-      <a href="{{ url_for('views.health') }}">Health</a>
-      <form action="{{ url_for('auth.logout') }}" method="post">
-        <button class="nav-button" type="submit">Sign out</button>
-      </form>
+    <button class="nav-toggle" type="button" aria-label="Open navigation" aria-expanded="false" aria-controls="primary-nav">
+      <span class="nav-toggle-lines" aria-hidden="true"></span><span>Menu</span>
+    </button>
+    <nav id="primary-nav" class="primary-nav" aria-label="Primary navigation">
+      <a class="nav-link{{ ' active' if overview_active else '' }}" href="{{ url_for('views.overview') }}"{% if overview_active %} aria-current="page"{% endif %}>Overview</a>
+      <a class="nav-link{{ ' active' if current_path == '/live' else '' }}" href="{{ url_for('views.live') }}"{% if current_path == '/live' %} aria-current="page"{% endif %}>Live</a>
+      <a class="nav-link inbox-nav-link{{ ' active' if current_path == '/inbox' else '' }}" href="{{ url_for('views.inbox') }}"{% if current_path == '/inbox' %} aria-current="page"{% endif %}>Inbox<span id="inbox-count" class="nav-count hidden"></span></a>
+
+      <details class="nav-group{{ ' active' if insights_active else '' }}">
+        <summary>Insights<span aria-hidden="true">⌄</span></summary>
+        <div class="nav-dropdown">
+          <a href="{{ url_for('views.briefings') }}"{% if current_path == '/briefings' %} aria-current="page"{% endif %}>Briefings</a>
+          <a href="{{ url_for('views.changes') }}"{% if current_path == '/changes' %} aria-current="page"{% endif %}>Changes</a>
+          <a href="{{ url_for('views.episodes') }}"{% if current_path == '/episodes' %} aria-current="page"{% endif %}>Episodes</a>
+          <a href="{{ url_for('views.almanac') }}"{% if current_path == '/almanac' %} aria-current="page"{% endif %}>Almanac</a>
+        </div>
+      </details>
+
+      <details class="nav-group{{ ' active' if content_active else '' }}">
+        <summary>Content<span aria-hidden="true">⌄</span></summary>
+        <div class="nav-dropdown">
+          <a href="{{ url_for('views.content_observatory') }}"{% if current_path == '/content' %} aria-current="page"{% endif %}>Observatory</a>
+          <a href="{{ url_for('views.chronicle') }}"{% if current_path == '/chronicle' %} aria-current="page"{% endif %}>Chronicle</a>
+          <a href="{{ url_for('views.pulse') }}"{% if current_path == '/pulse' %} aria-current="page"{% endif %}>Pulse</a>
+          <a href="{{ url_for('views.journeys') }}"{% if current_path == '/journeys' %} aria-current="page"{% endif %}>Reading Paths</a>
+          <a href="{{ url_for('views.galaxy') }}"{% if current_path == '/galaxy' %} aria-current="page"{% endif %}>Page Galaxy</a>
+        </div>
+      </details>
+
+      <details class="nav-group{{ ' active' if audience_active else '' }}">
+        <summary>Audience<span aria-hidden="true">⌄</span></summary>
+        <div class="nav-dropdown">
+          <a href="{{ url_for('views.links') }}"{% if current_path == '/links' %} aria-current="page"{% endif %}>Link Atlas</a>
+          <a href="{{ url_for('views.feed_readers') }}"{% if current_path == '/feed-readers' %} aria-current="page"{% endif %}>Feeds</a>
+          <a href="{{ url_for('views.ai_crawlers') }}"{% if current_path == '/ai-crawlers' %} aria-current="page"{% endif %}>AI Crawlers</a>
+          <a href="{{ url_for('views.ai_policy') }}"{% if current_path == '/ai-policy' %} aria-current="page"{% endif %}>AI Policy</a>
+        </div>
+      </details>
+
+      <details class="nav-group{{ ' active' if operations_active else '' }}">
+        <summary>Operations<span aria-hidden="true">⌄</span></summary>
+        <div class="nav-dropdown nav-dropdown-right">
+          <a href="{{ url_for('views.reliability') }}"{% if current_path == '/reliability' %} aria-current="page"{% endif %}>Reliability</a>
+          <a href="{{ url_for('views.errors') }}"{% if current_path == '/errors' %} aria-current="page"{% endif %}>Errors</a>
+          <a href="{{ url_for('views.health') }}"{% if current_path == '/health' %} aria-current="page"{% endif %}>Health</a>
+        </div>
+      </details>
+
+      <details class="nav-group account-menu">
+        <summary>Account<span aria-hidden="true">⌄</span></summary>
+        <div class="nav-dropdown nav-dropdown-right">
+          <form action="{{ url_for('auth.logout') }}" method="post">
+            <button class="nav-button" type="submit">Sign out</button>
+          </form>
+        </div>
+      </details>
     </nav>
   </header>
   <main class="shell">

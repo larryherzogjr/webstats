@@ -22,6 +22,54 @@
   let errorsDays = [7, 30, 90].includes(Number(new URLSearchParams(window.location.search).get("days")))
     ? Number(new URLSearchParams(window.location.search).get("days")) : 30;
 
+  function setupNavigation() {
+    const toggle = document.querySelector(".nav-toggle");
+    const nav = document.querySelector("#primary-nav");
+    if (!toggle || !nav) return;
+    const compactNavigation = window.matchMedia("(max-width: 980px)");
+    const groups = [...nav.querySelectorAll(".nav-group")];
+    const closeGroups = exception => groups.forEach(group => {
+      if (group !== exception) group.open = false;
+    });
+    groups.forEach(group => group.addEventListener("toggle", () => {
+      if (group.open) closeGroups(group);
+    }));
+    toggle.addEventListener("click", () => {
+      const opening = !nav.classList.contains("open");
+      nav.classList.toggle("open", opening);
+      toggle.setAttribute("aria-expanded", String(opening));
+      toggle.setAttribute("aria-label", opening ? "Close navigation" : "Open navigation");
+      if (opening && compactNavigation.matches) {
+        const activeGroup = nav.querySelector(".nav-group.active");
+        if (activeGroup) activeGroup.open = true;
+      }
+    });
+    document.addEventListener("click", event => {
+      if (nav.contains(event.target) || toggle.contains(event.target)) return;
+      closeGroups();
+      nav.classList.remove("open");
+      toggle.setAttribute("aria-expanded", "false");
+      toggle.setAttribute("aria-label", "Open navigation");
+    });
+    document.addEventListener("keydown", event => {
+      if (
+        event.key !== "Escape"
+        || (!nav.classList.contains("open") && !groups.some(group => group.open))
+      ) return;
+      closeGroups();
+      nav.classList.remove("open");
+      toggle.setAttribute("aria-expanded", "false");
+      toggle.setAttribute("aria-label", "Open navigation");
+      toggle.focus();
+    });
+    compactNavigation.addEventListener("change", () => {
+      closeGroups();
+      nav.classList.remove("open");
+      toggle.setAttribute("aria-expanded", "false");
+      toggle.setAttribute("aria-label", "Open navigation");
+    });
+  }
+
   function localDate(date) {
     const copy = new Date(date.getTime() - date.getTimezoneOffset() * 60000);
     return copy.toISOString().slice(0, 10);
@@ -1820,6 +1868,7 @@
     return value ? escapeHtml(new Date(value * 1000).toLocaleString()) : "Never";
   }
 
+  setupNavigation();
   if (page === "overview") { setupFilters(loadOverview); loadOverview(); }
   if (page === "site") {
     setupFilters(loadSite);
