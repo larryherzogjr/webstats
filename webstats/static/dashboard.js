@@ -12,6 +12,8 @@
   let almanacState = almanacStateFromUrl();
   let briefingWeek = new URLSearchParams(window.location.search).get("week") || "";
   let scopeSite = initialState.site;
+  let errorsDays = [7, 30, 90].includes(Number(new URLSearchParams(window.location.search).get("days")))
+    ? Number(new URLSearchParams(window.location.search).get("days")) : 30;
 
   function localDate(date) {
     const copy = new Date(date.getTime() - date.getTimezoneOffset() * 60000);
@@ -402,6 +404,78 @@
         { key: "weekly_baseline", format: fmt.format },
       ], "No steady pages yet.");
     } catch (error) { showError(error); }
+  }
+
+  function errorBadge(category) {
+    return `<span class="error-badge ${escapeHtml(category)}">${escapeHtml(category)}</span>`;
+  }
+
+  function errorUrl(push = false) {
+    const parameters = new URLSearchParams({ days: String(errorsDays) });
+    if (scopeSite) parameters.set("site", scopeSite);
+    window.history[push ? "pushState" : "replaceState"]({}, "", `${window.location.pathname}?${parameters}`);
+  }
+
+  async function loadErrors() {
+    clearError();
+    try {
+      const parameters = new URLSearchParams({ days: String(errorsDays) });
+      if (scopeSite) parameters.set("site", scopeSite);
+      const data = await api(`/api/errors?${parameters}`);
+      document.querySelector("#errors-range").textContent = dateLabel(data.window.from, data.window.to);
+      document.querySelector("#errors-days").value = String(data.window.days);
+      const summary = data.summary;
+      document.querySelector("#errors-heading").textContent = summary.actionable_paths
+        ? `${fmt.format(summary.actionable_paths)} path${summary.actionable_paths === 1 ? "" : "s"} worth a look`
+        : "No actionable misses detected";
+      document.querySelector("#errors-summary").textContent = summary.miss_requests
+        ? `${fmt.format(summary.actionable_requests)} of ${fmt.format(summary.miss_requests)} human 404 requests remain after filtering ${fmt.format(summary.probe_requests)} recognized probe requests.`
+        : "No human, non-asset 404s appeared in this window.";
+      document.querySelector("#errors-metrics").innerHTML = [
+        metric("Misses to review", fmt.format(summary.actionable_requests)),
+        metric("Regressions", fmt.format(summary.regressions)),
+        metric("Possible typos", fmt.format(summary.typo_candidates)),
+        metric("Probe noise removed", `${summary.noise_percent}%`),
+      ].join("");
+      const signals = document.querySelector("#error-signals");
+      signals.innerHTML = data.signals.length ? data.signals.map(item => {
+        const href = pageStoryHref(item, data.window.from, data.window.to);
+        const context = [
+          item.top_referrer ? `via ${item.top_referrer}` : null,
+          item.top_country ? `${countryFlag(item.top_country)} ${item.top_country}` : null,
+          item.suggestion ? `${item.suggestion.similarity}% match` : null,
+        ].filter(Boolean);
+        return `<article class="error-card"><div class="error-card-top">${errorBadge(item.category)}<strong>${fmt.format(item.requests)} miss${item.requests === 1 ? "" : "es"}</strong></div><a href="${escapeHtml(href)}">${escapeHtml(item.path)}</a><small>${escapeHtml(item.site)} · ${fmt.format(item.active_days)} active day${item.active_days === 1 ? "" : "s"}</small><p>${escapeHtml(item.explanation)}</p>${item.suggestion ? `<a class="error-suggestion" href="${escapeHtml(pageStoryHref({ site: item.site, path: item.suggestion.path }, data.window.from, data.window.to))}">Likely destination: ${escapeHtml(item.suggestion.path)}</a>` : ""}${context.length ? `<div class="pulse-context">${context.map(value => `<span>${escapeHtml(value)}</span>`).join("")}</div>` : ""}</article>`;
+      }).join("") : '<p class="empty">Nothing actionable in this window. Recognized scanner paths remain listed below for transparency.</p>';
+      fillTable("#error-probes", data.probes, [
+        { key: "path" },
+        { key: "site" },
+        { key: "requests", format: fmt.format },
+        { key: "active_days", format: fmt.format },
+      ], "No recognized probe traffic in this window.");
+    } catch (error) { showError(error); }
+  }
+
+  function setupErrors() {
+    const days = document.querySelector("#errors-days");
+    days.value = String(errorsDays);
+    days.addEventListener("change", () => {
+      errorsDays = Number(days.value);
+      errorUrl(true);
+      loadErrors();
+    });
+    setupSiteFilter(() => { errorUrl(true); loadErrors(); });
+    window.addEventListener("popstate", () => {
+      const parameters = new URLSearchParams(window.location.search);
+      scopeSite = parameters.get("site") || "";
+      errorsDays = [7, 30, 90].includes(Number(parameters.get("days")))
+        ? Number(parameters.get("days")) : 30;
+      const siteSelect = document.querySelector("#site-filter");
+      if (siteSelect) siteSelect.value = scopeSite;
+      days.value = String(errorsDays);
+      loadErrors();
+    });
+    errorUrl(false);
   }
 
   function renderBriefingFacts(selector, facts) {
@@ -983,5 +1057,6 @@
     });
     loadPulse();
   }
+  if (page === "errors") { setupErrors(); loadErrors(); }
   if (page === "health") loadHealth();
 })();

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from datetime import date, datetime, timedelta, timezone
+from difflib import SequenceMatcher
 import json
 import os
 from pathlib import Path
@@ -17,6 +18,7 @@ from flask import Blueprint, current_app, jsonify, request
 from .auth import login_required
 from .bots import AI_AGENTS
 from .db import connect
+from .rollup import PROBE_PATH_PREFIXES, PROBE_PATHS
 
 
 api_bp = Blueprint("api", __name__, url_prefix="/api")
@@ -134,6 +136,58 @@ def _metric_column(bots: int, assets: int) -> str:
     if assets:
         return "human_requests"
     return "human_nonasset_requests"
+
+
+def _is_probe_path(path: str) -> bool:
+    lowered = path.lower()
+    return lowered in PROBE_PATHS or any(
+        lowered.startswith(prefix) for prefix in PROBE_PATH_PREFIXES
+    )
+
+
+def _edit_distance(left: str, right: str) -> int:
+    """Return a bounded-cost Levenshtein distance for short request paths."""
+    if len(left) > len(right):
+        left, right = right, left
+    previous = list(range(len(left) + 1))
+    for row_number, right_char in enumerate(right, 1):
+        current = [row_number]
+        for column, left_char in enumerate(left, 1):
+            current.append(min(
+                current[-1] + 1,
+                previous[column] + 1,
+                previous[column - 1] + (left_char != right_char),
+            ))
+        previous = current
+    return previous[-1]
+
+
+def _typo_candidate(
+    path: str, successful_paths: Iterable[tuple[str, int]]
+) -> Optional[dict[str, Any]]:
+    missing = path.lower().rstrip("/") or "/"
+    if missing == "/" or len(missing) > 160:
+        return None
+    best: Optional[dict[str, Any]] = None
+    for candidate, successes in successful_paths:
+        normalized = candidate.lower().rstrip("/") or "/"
+        if normalized in {missing, "/"} or len(normalized) > 160:
+            continue
+        distance = _edit_distance(missing, normalized)
+        similarity = SequenceMatcher(None, missing, normalized).ratio()
+        allowed = 1 if max(len(missing), len(normalized)) < 8 else 2
+        if not (distance <= allowed or similarity >= 0.88):
+            continue
+        score = similarity + min(successes, 1000) / 100_000 - distance / 100
+        if best is None or score > best["rank"]:
+            best = {
+                "path": candidate,
+                "similarity": round(similarity * 100),
+                "rank": score,
+            }
+    if best:
+        best.pop("rank")
+    return best
 
 
 @api_bp.get("/health")
@@ -1050,6 +1104,193 @@ def content_pulse():
         "steady": [row for row in pages if row["category"] == "steady"][:10],
         "total_pages": len(pages),
         "limited": len(signals) > limit,
+    })
+
+
+@api_bp.get("/errors")
+@login_required
+def error_intelligence():
+    config = current_app.config["WEBSTATS_CONFIG"]
+    today = datetime.now(ZoneInfo(config.server.timezone)).date()
+    days = _int_arg("days", 30, 7, 365)
+    limit = _int_arg("limit", 100, 1, 500)
+    start = today - timedelta(days=days - 1)
+
+    with _conn() as conn:
+        site = _requested_site(conn)
+        site_clause = "AND d.site_id=?" if site else ""
+        parameters: tuple[Any, ...] = (
+            start.isoformat(), today.isoformat(),
+            start.isoformat(), today.isoformat(),
+            start.isoformat(), today.isoformat(),
+        )
+        if site:
+            parameters += (site["id"],)
+        misses = conn.execute(
+            f"""
+            SELECT s.name site, d.site_id, d.path,
+                   SUM(CASE WHEN d.day BETWEEN ? AND ?
+                       THEN d.human_nonasset_requests ELSE 0 END) requests,
+                   COUNT(DISTINCT CASE WHEN d.day BETWEEN ? AND ?
+                       AND d.human_nonasset_requests>0 THEN d.day END) active_days,
+                   MIN(CASE WHEN d.human_nonasset_requests>0 THEN d.day END) first_seen,
+                   MAX(CASE WHEN d.day BETWEEN ? AND ?
+                       AND d.human_nonasset_requests>0 THEN d.day END) last_seen
+            FROM daily_404 d JOIN sites s ON s.id=d.site_id
+            WHERE d.human_nonasset_requests>0 {site_clause}
+            GROUP BY d.site_id, d.path
+            HAVING SUM(CASE WHEN d.day BETWEEN ? AND ?
+                       THEN d.human_nonasset_requests ELSE 0 END)>0
+            """,
+            parameters + (start.isoformat(), today.isoformat()),
+        ).fetchall()
+
+        success_parameters: tuple[Any, ...] = ()
+        success_clause = "AND p.site_id=?" if site else ""
+        if site:
+            success_parameters = (site["id"],)
+        successes: dict[tuple[int, str], dict[str, Any]] = {}
+        successful_paths: dict[int, list[tuple[str, int]]] = defaultdict(list)
+        for row in conn.execute(
+            f"""
+            SELECT p.site_id, p.path, MAX(p.day) last_success,
+                   SUM(p.human_nonasset_requests) requests
+            FROM daily_page_status p
+            WHERE p.status BETWEEN 200 AND 399
+              AND p.human_nonasset_requests>0 {success_clause}
+            GROUP BY p.site_id, p.path
+            ORDER BY requests DESC
+            """,
+            success_parameters,
+        ):
+            successes[(row["site_id"], row["path"])] = dict(row)
+            if len(successful_paths[row["site_id"]]) < 2000:
+                successful_paths[row["site_id"]].append(
+                    (row["path"], row["requests"])
+                )
+
+        raw_parameters: tuple[Any, ...] = (
+            start.isoformat(), today.isoformat()
+        )
+        raw_site_clause = "AND r.site_id=?" if site else ""
+        if site:
+            raw_parameters += (site["id"],)
+        referrers: dict[tuple[int, str], dict[str, Any]] = {}
+        for row in conn.execute(
+            f"""
+            SELECT r.site_id, r.path, r.referrer_host,
+                   COUNT(*) requests
+            FROM requests r
+            WHERE r.day BETWEEN ? AND ? AND r.status=404
+              AND r.is_bot=0 AND r.is_asset=0
+              AND r.referrer_host IS NOT NULL {raw_site_clause}
+            GROUP BY r.site_id, r.path, r.referrer_host
+            ORDER BY requests DESC, r.referrer_host
+            """,
+            raw_parameters,
+        ):
+            referrers.setdefault((row["site_id"], row["path"]), dict(row))
+        countries: dict[tuple[int, str], dict[str, Any]] = {}
+        for row in conn.execute(
+            f"""
+            SELECT r.site_id, r.path, r.country, COUNT(*) requests
+            FROM requests r
+            WHERE r.day BETWEEN ? AND ? AND r.status=404
+              AND r.is_bot=0 AND r.is_asset=0
+              AND r.country IS NOT NULL {raw_site_clause}
+            GROUP BY r.site_id, r.path, r.country
+            ORDER BY requests DESC, r.country
+            """,
+            raw_parameters,
+        ):
+            countries.setdefault((row["site_id"], row["path"]), dict(row))
+
+    signals = []
+    probes = []
+    counts: dict[str, int] = defaultdict(int)
+    total_requests = 0
+    probe_requests = 0
+    priority = {"regression": 0, "typo": 1, "persistent": 2, "new": 3, "watch": 4}
+    for row in misses:
+        item = {
+            key: row[key]
+            for key in (
+                "site", "path", "requests", "active_days", "first_seen", "last_seen"
+            )
+        }
+        total_requests += row["requests"]
+        if _is_probe_path(row["path"]):
+            probe_requests += row["requests"]
+            probes.append(item)
+            continue
+
+        success = successes.get((row["site_id"], row["path"]))
+        regression = bool(
+            success and success["last_success"] < row["last_seen"]
+        )
+        suggestion = None if success else _typo_candidate(
+            row["path"], successful_paths[row["site_id"]]
+        )
+        if regression:
+            category = "regression"
+            explanation = (
+                f"This path previously worked; its last successful day was "
+                f"{success['last_success']}."
+            )
+        elif suggestion:
+            category = "typo"
+            explanation = f"This resembles the working path {suggestion['path']}."
+        elif row["active_days"] >= 3 or row["requests"] >= 5:
+            category = "persistent"
+            explanation = (
+                f"Repeated on {row['active_days']} day"
+                f"{'s' if row['active_days'] != 1 else ''}; likely a stale link "
+                "or recurring request."
+            )
+        elif row["first_seen"] >= start.isoformat():
+            category = "new"
+            explanation = f"First appeared on {row['first_seen']}."
+        else:
+            category = "watch"
+            explanation = "An occasional miss without enough evidence to diagnose yet."
+        counts[category] += 1
+        referrer = referrers.get((row["site_id"], row["path"]))
+        country = countries.get((row["site_id"], row["path"]))
+        signals.append({
+            **item,
+            "category": category,
+            "explanation": explanation,
+            "last_success": success["last_success"] if success else None,
+            "suggestion": suggestion,
+            "top_referrer": referrer["referrer_host"] if referrer else None,
+            "top_country": country["country"] if country else None,
+        })
+
+    signals.sort(key=lambda row: (
+        priority[row["category"]], -row["requests"], -row["active_days"],
+        row["site"], row["path"],
+    ))
+    probes.sort(key=lambda row: (-row["requests"], row["site"], row["path"]))
+    actionable_requests = total_requests - probe_requests
+    return jsonify({
+        "scope": {"site": site["name"] if site else None},
+        "window": {"from": start.isoformat(), "to": today.isoformat(), "days": days},
+        "summary": {
+            "miss_requests": total_requests,
+            "actionable_requests": actionable_requests,
+            "actionable_paths": len(signals),
+            "probe_requests": probe_requests,
+            "noise_percent": round(100 * probe_requests / total_requests, 1)
+            if total_requests else 0.0,
+            "regressions": counts["regression"],
+            "typo_candidates": counts["typo"],
+            "persistent": counts["persistent"],
+        },
+        "counts": {name: counts.get(name, 0) for name in priority},
+        "signals": signals[:limit],
+        "signals_limited": len(signals) > limit,
+        "probes": probes[:25],
+        "probes_limited": len(probes) > 25,
     })
 
 

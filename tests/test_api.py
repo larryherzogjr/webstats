@@ -14,6 +14,7 @@ from webstats.auth import _attempts, _credential_token
 from webstats.config import Config, GeoIPConfig, ServerConfig, SiteConfig, StorageConfig
 from webstats.db import connect, insert_requests, site_id_map
 from webstats.ingest import ingest_once
+from webstats.rollup import recompute_day
 
 
 def line(
@@ -88,6 +89,7 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(self.client.get("/almanac").status_code, 200)
         self.assertEqual(self.client.get("/briefings").status_code, 200)
         self.assertEqual(self.client.get("/pulse").status_code, 200)
+        self.assertEqual(self.client.get("/errors").status_code, 200)
         self.assertEqual(self.client.get("/feed-readers").status_code, 200)
         self.assertEqual(self.client.get("/ai-crawlers").status_code, 200)
         self.assertEqual(self.client.get("/live").status_code, 200)
@@ -792,6 +794,77 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(pages["/cooling"]["category"], "cooling")
         self.assertEqual(pages["/dormant"]["category"], "dormant")
         self.assertEqual(body["counts"]["debut"], 1)
+        self.assertEqual(scoped.get_json()["scope"], {"site": "example.com"})
+        self.assertEqual(unknown.status_code, 404)
+
+    def test_error_intelligence_triages_misses_and_filters_probes(self):
+        with connect(self.config.storage.db_path) as conn:
+            site_id = site_id_map(conn)["example.com"]
+            raw_rows = []
+            for number, path, referrer, country in (
+                (1, "/gone", "old.example", "CA"),
+                (2, "/posts/webstat", None, "US"),
+                (3, "/persistent", None, "GB"),
+                (4, "/.env", None, "NL"),
+            ):
+                raw_rows.append((
+                    f"error-source-{number}", f"error-fingerprint-{number}",
+                    site_id, 1790672400 + number, "2026-09-29", f"visitor-{number}",
+                    "GET", path, None, 404, 10, referrer,
+                    f"https://{referrer}/link" if referrer else None,
+                    "Mozilla/5.0", "Other browser", "Other", 0, 0, country,
+                ))
+            insert_requests(conn, raw_rows)
+            recompute_day(conn, "2026-09-29")
+            conn.executemany(
+                """
+                INSERT INTO daily_page_status(
+                    site_id, day, path, status, requests, human_requests,
+                    nonasset_requests, human_nonasset_requests
+                ) VALUES (?, ?, ?, 200, ?, ?, ?, ?)
+                """,
+                (
+                    (site_id, "2026-09-20", "/gone", 4, 4, 4, 4),
+                    (site_id, "2026-09-28", "/posts/webstats", 20, 20, 20, 20),
+                ),
+            )
+            conn.executemany(
+                """
+                INSERT INTO daily_404(
+                    site_id, day, path, requests, human_requests,
+                    nonasset_requests, human_nonasset_requests
+                ) VALUES (?, ?, '/persistent', 1, 1, 1, 1)
+                """,
+                ((site_id, "2026-09-27"), (site_id, "2026-09-28")),
+            )
+            conn.commit()
+        self.authenticate()
+
+        with patch("webstats.api.datetime", wraps=datetime) as clock:
+            clock.now.return_value = datetime(
+                2026, 9, 29, 12, tzinfo=ZoneInfo("America/Chicago")
+            )
+            response = self.client.get("/api/errors?days=30")
+            scoped = self.client.get("/api/errors?days=7&site=example.com")
+            unknown = self.client.get("/api/errors?site=unknown.example")
+
+        self.assertEqual(response.status_code, 200)
+        body = response.get_json()
+        signals = {row["path"]: row for row in body["signals"]}
+        self.assertEqual(signals["/gone"]["category"], "regression")
+        self.assertEqual(signals["/gone"]["last_success"], "2026-09-20")
+        self.assertEqual(signals["/gone"]["top_referrer"], "old.example")
+        self.assertEqual(signals["/gone"]["top_country"], "CA")
+        self.assertEqual(signals["/posts/webstat"]["category"], "typo")
+        self.assertEqual(
+            signals["/posts/webstat"]["suggestion"]["path"],
+            "/posts/webstats",
+        )
+        self.assertEqual(signals["/persistent"]["category"], "persistent")
+        self.assertEqual(signals["/persistent"]["active_days"], 3)
+        self.assertEqual(body["summary"]["probe_requests"], 1)
+        self.assertEqual(body["probes"][0]["path"], "/.env")
+        self.assertEqual(body["window"]["days"], 30)
         self.assertEqual(scoped.get_json()["scope"], {"site": "example.com"})
         self.assertEqual(unknown.status_code, 404)
 

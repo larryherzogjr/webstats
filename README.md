@@ -36,6 +36,9 @@ log paths, retention, timezone, and log format all live in TOML configuration.
 - Content Pulse classifications for debuts, rising and cooling pages,
   evergreen content, dormant pages, and content resurfacing after a long quiet
   spell, with the referrer, country, and AI activity behind each signal.
+- Error Intelligence that separates known probe noise from human 404s, flags
+  regressions and persistent misses, and suggests likely intended paths for
+  typo-shaped requests without changing the underlying traffic history.
 - Clickable per-page stories with permanent daily history, lifetime first and
   last sightings, referrers, AI readers, countries, and response codes.
 - Idempotent daily rollups retained after raw request pruning.
@@ -244,6 +247,7 @@ All routes require the admin session except `/api/health`:
 - `GET /api/almanac?year=&site=&bots=0&assets=0`
 - `GET /api/briefing?week=YYYY-MM-DD` (the week must begin on Monday)
 - `GET /api/pulse?site=&limit=`
+- `GET /api/errors?site=&days=7|30|90&limit=`
 - `GET /api/live?minutes=60&limit=40`
 - `GET /api/health`
 

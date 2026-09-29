@@ -101,6 +101,12 @@ def pulse():
     return render_template("pulse.html", server_today=_server_today())
 
 
+@views_bp.get("/errors")
+@login_required
+def errors():
+    return render_template("errors.html", server_today=_server_today())
+
+
 @views_bp.get("/health")
 @login_required
 def health():
