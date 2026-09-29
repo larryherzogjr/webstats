@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+{% block title %}Change Engine | Webstats{% endblock %}
+{% block page_id %}changes{% endblock %}
+{% block content %}
+<div class="page-heading">
+  <div><p class="eyebrow">What moved—and why</p><h1>Change Engine</h1></div>
+  <p id="range-label" class="range-label"></p>
+</div>
+{% include "_filters.html" %}
+<div id="page-error" class="alert hidden" role="alert"></div>
+<div id="changes-privacy" class="alert hidden" role="status"></div>
+<section class="panel changes-hero">
+  <div class="panel-heading">
+    <div><p class="eyebrow">Automatic explanation</p><h2 id="changes-heading">Comparing equal windows</h2></div>
+    <span id="changes-comparison" class="legend-note"></span>
+  </div>
+  <div id="changes-narrative" class="change-narrative" aria-live="polite"></div>
+</section>
+<section id="changes-metrics" class="metric-grid" aria-label="Change summary"></section>
+<div class="change-grid">
+  <section class="panel">
+    <div class="panel-heading"><div><p class="eyebrow">Content drivers</p><h2>Pages gaining or losing attention</h2></div></div>
+    <div id="change-pages" class="change-driver-list"></div>
+  </section>
+  <section class="panel">
+    <div class="panel-heading"><div><p class="eyebrow">Discovery drivers</p><h2>Referrers that changed</h2></div></div>
+    <div id="change-referrers" class="change-driver-list"></div>
+  </section>
+</div>
+<div class="change-grid three">
+  <section class="panel">
+    <div class="panel-heading"><div><p class="eyebrow">Audience</p><h2>Machines and readers</h2></div></div>
+    <div id="change-audience" class="change-driver-list"></div>
+  </section>
+  <section class="panel">
+    <div class="panel-heading"><div><p class="eyebrow">Geography</p><h2>Countries in motion</h2></div></div>
+    <div id="change-countries" class="change-driver-list"></div>
+  </section>
+  <section class="panel">
+    <div class="panel-heading"><div><p class="eyebrow">Reliability</p><h2>Error movement</h2></div></div>
+    <div id="change-errors" class="change-driver-list"></div>
+  </section>
+</div>
+<p class="muted methodology-note">Each selected window is compared with the immediately preceding window of the same length. Human page and referrer drivers use permanent daily rollups. Totals may include privacy-protected sites, while their page-level explanations remain hidden.</p>
+{% endblock %}

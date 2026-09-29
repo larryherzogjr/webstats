@@ -37,6 +37,10 @@ log paths, retention, timezone, and log format all live in TOML configuration.
 - Automatic Weekly Briefings that compare like-for-like periods, explain the
   largest changes in plain language, collect discoveries and unusual moments,
   and provide a migration-free archive generated from permanent rollups.
+- A Change Engine for any selected date range that compares the immediately
+  preceding equal-length window and attributes movement to pages, referrers,
+  countries, bots, AI crawlers, feed readers, and errors, with direct links to
+  the relevant drill-downs.
 - Content Pulse classifications for debuts, rising and cooling pages,
   evergreen content, dormant pages, and content resurfacing after a long quiet
   spell, with the referrer, country, and AI activity behind each signal.
@@ -55,6 +59,10 @@ log paths, retention, timezone, and log format all live in TOML configuration.
   to referring hosts, anonymous aggregate Reading Paths, and recognized AI
   readers. Layers can be hidden independently and every node opens its source
   intelligence or page story.
+- An AI Policy Observatory that fetches each configured site's current public
+  `robots.txt`, applies explicit and wildcard AI-agent rules, and compares them
+  with observed crawler paths. Policy conflicts are presented as investigation
+  signals rather than claims about intent or past policy.
 - Clickable per-page stories with permanent daily history, lifetime first and
   last sightings, referrers, AI readers, countries, and response codes.
 - Idempotent daily rollups retained after raw request pruning.
@@ -93,10 +101,16 @@ Reading Paths applies the same boundary earlier: `ad-fontes.app` requests are
 excluded while daily journey rollups are built, so no visit sequence or
 transition for that site is stored or returned.
 
-Link Atlas uses permanent daily referrer and page/referrer aggregates, so it
-continues to work after raw-log retention expires without adding a migration or
+Link Atlas and the Change Engine use permanent daily aggregates, so they
+continue to work after raw-log retention expires without adding a migration or
 a visitor identifier. `ad-fontes.app` intentionally logs no referrer and is
 shown as privacy-protected rather than as a misleading empty result.
+
+The AI Policy Observatory keeps no policy archive. It caches current public
+`robots.txt` responses in application memory for 15 minutes and compares those
+current rules with the selected historical traffic window. Its conflict label
+therefore means “this observed path is disallowed now,” not necessarily that
+the same rule existed when the request occurred.
 
 ## Fresh installation in 14 steps
 

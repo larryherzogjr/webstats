@@ -88,6 +88,7 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(self.client.get("/site/example.com/page").status_code, 400)
         self.assertEqual(self.client.get("/almanac").status_code, 200)
         self.assertEqual(self.client.get("/briefings").status_code, 200)
+        self.assertEqual(self.client.get("/changes").status_code, 200)
         self.assertEqual(self.client.get("/pulse").status_code, 200)
         self.assertEqual(self.client.get("/errors").status_code, 200)
         self.assertEqual(self.client.get("/journeys").status_code, 200)
@@ -96,6 +97,7 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(self.client.get("/galaxy").status_code, 200)
         self.assertEqual(self.client.get("/feed-readers").status_code, 200)
         self.assertEqual(self.client.get("/ai-crawlers").status_code, 200)
+        self.assertEqual(self.client.get("/ai-policy").status_code, 200)
         self.assertEqual(self.client.get("/live").status_code, 200)
         self.assertEqual(self.client.get("/health").status_code, 200)
         self.assertEqual(self.client.get("/site/not-configured.test").status_code, 404)
@@ -751,6 +753,148 @@ class ApiTests(unittest.TestCase):
             self.client.get("/api/galaxy?site=unknown.example").status_code,
             404,
         )
+
+    def test_change_engine_compares_equal_windows_and_explains_drivers(self):
+        with connect(self.config.storage.db_path) as conn:
+            site_id = site_id_map(conn)["example.com"]
+            conn.executemany(
+                """
+                INSERT INTO daily_filter(
+                    site_id, day, include_bots, include_assets, requests,
+                    unique_visitors, bytes, status_2xx, status_3xx,
+                    status_4xx, status_5xx
+                ) VALUES (?, '2026-09-27', ?, 0, ?, ?, 100, ?, 0, ?, 0)
+                """,
+                (
+                    (site_id, 0, 4, 3, 3, 1),
+                    (site_id, 1, 6, 4, 5, 1),
+                ),
+            )
+            conn.executemany(
+                """
+                INSERT INTO daily_page_status(
+                    site_id, day, path, status, requests, human_requests,
+                    nonasset_requests, human_nonasset_requests
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    (site_id, "2026-09-27", "/old", 200, 4, 4, 4, 4),
+                    (site_id, "2026-09-28", "/new", 200, 3, 3, 3, 3),
+                ),
+            )
+            conn.executemany(
+                """
+                INSERT INTO daily_page_referrer(
+                    site_id, day, path, referrer_host, requests,
+                    human_requests, nonasset_requests, human_nonasset_requests
+                ) VALUES (?, ?, '/new', ?, ?, ?, ?, ?)
+                """,
+                (
+                    (site_id, "2026-09-27", "old.example", 2, 2, 2, 2),
+                    (site_id, "2026-09-28", "news.example", 3, 3, 3, 3),
+                ),
+            )
+            conn.executemany(
+                """
+                INSERT INTO daily_country(
+                    site_id, day, country, requests, human_requests,
+                    nonasset_requests, human_nonasset_requests
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    (site_id, "2026-09-27", "CA", 2, 2, 2, 2),
+                    (site_id, "2026-09-28", "US", 3, 3, 3, 3),
+                ),
+            )
+            conn.execute(
+                """
+                INSERT INTO daily_page_agent(
+                    site_id, day, path, ua_family, is_bot, requests, asset_requests
+                ) VALUES (?, '2026-09-28', '/new', 'GPTBot', 1, 3, 0)
+                """,
+                (site_id,),
+            )
+            conn.execute(
+                """
+                INSERT INTO daily_feed_reader(
+                    site_id, day, path, reader, requests,
+                    reported_subscribers, first_seen, last_seen
+                ) VALUES (?, '2026-09-28', '/feed.xml', 'Feedly', 2, 4, 1, 1)
+                """,
+                (site_id,),
+            )
+            conn.commit()
+        self.authenticate()
+
+        response = self.client.get(
+            "/api/changes?from=2026-09-28&to=2026-09-28&site=example.com"
+        )
+        self.assertEqual(response.status_code, 200)
+        body = response.get_json()
+        self.assertEqual(
+            body["window"],
+            {
+                "from": "2026-09-28", "to": "2026-09-28", "days": 1,
+                "previous_from": "2026-09-27", "previous_to": "2026-09-27",
+            },
+        )
+        self.assertEqual(body["summary"]["requests"], 2)
+        self.assertEqual(body["summary"]["previous_requests"], 4)
+        self.assertEqual(body["summary"]["change_percent"], -50.0)
+        pages = {(row["path"], row["category"]) for row in body["pages"]}
+        self.assertIn(("/new", "new"), pages)
+        self.assertIn(("/old", "vanished"), pages)
+        self.assertEqual(body["audience"]["ai"]["change"], 3)
+        self.assertEqual(body["audience"]["feeds"]["change"], 2)
+        self.assertTrue(body["narrative"])
+        self.assertEqual(
+            self.client.get("/api/changes?site=unknown.example").status_code,
+            404,
+        )
+
+    def test_ai_policy_compares_current_rules_with_observed_paths(self):
+        with connect(self.config.storage.db_path) as conn:
+            site_id = site_id_map(conn)["example.com"]
+            conn.executemany(
+                """
+                INSERT INTO daily_page_agent(
+                    site_id, day, path, ua_family, is_bot, requests, asset_requests
+                ) VALUES (?, '2026-09-28', ?, ?, 1, ?, 0)
+                """,
+                (
+                    (site_id, "/private", "GPTBot", 3),
+                    (site_id, "/private/public", "GPTBot", 2),
+                    (site_id, "/tmp/file", "ClaudeBot", 1),
+                ),
+            )
+            conn.commit()
+        self.authenticate()
+        robots = """User-agent: GPTBot
+Disallow: /private
+Allow: /private/public
+
+User-agent: *
+Disallow: /tmp
+"""
+        fetched = {
+            "example.com": {
+                "site": "example.com", "url": "https://example.com/robots.txt",
+                "status": "available", "text": robots,
+            }
+        }
+        with patch("webstats.api.fetch_robots_policies", return_value=fetched):
+            response = self.client.get(
+                "/api/ai-policy?from=2026-09-28&to=2026-09-28&site=example.com"
+            )
+        self.assertEqual(response.status_code, 200)
+        body = response.get_json()
+        self.assertEqual(body["totals"]["observed_requests"], 6)
+        self.assertEqual(body["totals"]["conflict_requests"], 4)
+        agents = {row["agent"]: row for row in body["agents"]}
+        self.assertEqual(agents["GPTBot"]["policy_source"], "explicit")
+        self.assertEqual(agents["GPTBot"]["conflict_requests"], 3)
+        self.assertEqual(agents["ClaudeBot"]["policy_source"], "wildcard")
+        self.assertEqual(agents["ClaudeBot"]["conflict_requests"], 1)
 
     def test_almanac_records_streaks_milestones_and_calendar(self):
         with connect(self.config.storage.db_path) as conn:

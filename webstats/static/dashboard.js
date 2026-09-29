@@ -1366,6 +1366,124 @@
     } catch (error) { showError(error); }
   }
 
+  function changeDriverRows(rows, label, href, emptyText) {
+    if (!rows.length) return `<p class="empty">${escapeHtml(emptyText)}</p>`;
+    const maximum = Math.max(...rows.map(row => Math.abs(row.change)), 1);
+    return rows.slice(0, 8).map(row => {
+      const text = label(row);
+      const destination = href?.(row);
+      const title = destination
+        ? `<a href="${escapeHtml(destination)}">${escapeHtml(text)}</a>`
+        : `<strong>${escapeHtml(text)}</strong>`;
+      const direction = row.change > 0 ? "up" : "down";
+      const width = Math.max(5, Math.round(100 * Math.abs(row.change) / maximum));
+      return `<article class="change-driver ${direction}"><div class="change-driver-copy">${title}<small>${escapeHtml(row.site || "All sites")} · ${fmt.format(row.previous_requests)} → ${fmt.format(row.requests)}</small></div><span class="change-value">${signed(row.change)}</span><div class="change-track"><span style="width:${width}%"></span></div></article>`;
+    }).join("");
+  }
+
+  async function loadChanges() {
+    clearError();
+    try {
+      const data = await api(`/api/changes?${query({ limit: "16" })}`);
+      document.querySelector("#range-label").textContent = dateLabel(data.window.from, data.window.to);
+      document.querySelector("#changes-comparison").textContent = `vs ${dateLabel(data.window.previous_from, data.window.previous_to)}`;
+      const change = data.summary.change;
+      const percent = data.summary.change_percent;
+      document.querySelector("#changes-heading").textContent = !data.summary.previous_requests
+        ? "A new comparison baseline"
+        : change === 0 ? "Traffic held steady"
+          : `Traffic ${change > 0 ? "rose" : "fell"} ${Math.abs(percent)}%`;
+      document.querySelector("#changes-narrative").innerHTML = data.narrative
+        .map((line, index) => `<p${index === 0 ? ' class="lead"' : ""}>${escapeHtml(line)}</p>`)
+        .join("");
+      document.querySelector("#changes-metrics").innerHTML = [
+        metric("Human page requests", fmt.format(data.summary.requests)),
+        metric("Request change", signed(data.summary.change)),
+        metric("Visitor-day change", signed(data.summary.visitor_change)),
+        metric("Bot change", signed(data.audience.bots.change)),
+        metric("AI crawler change", signed(data.audience.ai.change)),
+        metric("Error change", signed(data.errors.change)),
+      ].join("");
+      const privacy = document.querySelector("#changes-privacy");
+      privacy.classList.toggle("hidden", !data.privacy.protected);
+      privacy.textContent = data.privacy.protected
+        ? "This site contributes anonymous totals, but its page-level change drivers are intentionally private."
+        : "";
+      document.querySelector("#change-pages").innerHTML = changeDriverRows(
+        data.pages, row => row.path,
+        row => pageStoryHref(row, data.window.from, data.window.to),
+        "No page-level movement in these windows."
+      );
+      document.querySelector("#change-referrers").innerHTML = changeDriverRows(
+        data.referrers, row => row.source,
+        row => `/links?${new URLSearchParams({ from: data.window.from, to: data.window.to, site: row.site, source: row.source })}`,
+        "No referral movement in these windows."
+      );
+      const audienceRows = [
+        { site: "All selected traffic", name: "All bots", ...data.audience.bots },
+        { site: "Recognized agents", name: "AI crawlers", ...data.audience.ai },
+        { site: "Recognized readers", name: "Feed readers", ...data.audience.feeds },
+      ];
+      document.querySelector("#change-audience").innerHTML = changeDriverRows(
+        audienceRows, row => row.name, row => row.name === "AI crawlers" ? `/ai-crawlers?${query()}` : null,
+        "No audience movement in these windows."
+      );
+      document.querySelector("#change-countries").innerHTML = changeDriverRows(
+        data.countries, row => row.country, null,
+        "No country movement in these windows."
+      );
+      document.querySelector("#change-errors").innerHTML = changeDriverRows(
+        data.errors.paths, row => row.path,
+        row => pageStoryHref(row, data.window.from, data.window.to),
+        "No error movement in these windows."
+      );
+    } catch (error) { showError(error); }
+  }
+
+  async function loadAiPolicy() {
+    clearError();
+    try {
+      const data = await api(`/api/ai-policy?${query()}`);
+      document.querySelector("#range-label").textContent = dateLabel(data.from, data.to);
+      document.querySelector("#policy-heading").textContent = data.totals.conflict_requests
+        ? `${fmt.format(data.totals.conflict_requests)} policy conflict${data.totals.conflict_requests === 1 ? "" : "s"} to inspect`
+        : "No observed policy conflicts";
+      document.querySelector("#policy-narrative").textContent = data.narrative;
+      document.querySelector("#policy-metrics").innerHTML = [
+        metric("Sites checked", fmt.format(data.totals.sites)),
+        metric("robots.txt available", fmt.format(data.totals.robots_available)),
+        metric("AI requests observed", fmt.format(data.totals.observed_requests)),
+        metric("Policy conflicts", fmt.format(data.totals.conflict_requests)),
+        metric("AI agents observed", fmt.format(data.totals.agents_observed)),
+        metric("Policies unavailable", fmt.format(data.totals.unavailable)),
+      ].join("");
+      const privacy = document.querySelector("#policy-privacy");
+      privacy.classList.toggle("hidden", !data.privacy.protected);
+      privacy.textContent = data.privacy.protected
+        ? "Current public policy is shown, but this site's observed crawler paths remain private."
+        : "";
+      document.querySelector("#policy-sites").innerHTML = data.sites.map(site => {
+        const status = site.robots_status === "available" ? "Published"
+          : site.robots_status === "not_found" ? "No robots.txt" : "Unavailable";
+        const posture = site.restricted_agents
+          ? `${site.restricted_agents} AI agent${site.restricted_agents === 1 ? "" : "s"} restricted`
+          : "No AI-specific restrictions detected";
+        return `<article class="policy-site-card ${site.conflict_requests ? "conflict" : ""}"><div><span class="policy-status ${escapeHtml(site.robots_status)}">${escapeHtml(status)}</span><strong>${escapeHtml(site.site)}</strong></div><p>${escapeHtml(posture)}</p><small>${fmt.format(site.observed_requests)} observed requests · ${fmt.format(site.conflict_requests)} conflicts</small><a href="${escapeHtml(site.robots_url)}" target="_blank" rel="noopener noreferrer">Open robots.txt</a></article>`;
+      }).join("");
+      const visibleAgents = data.agents.filter(row =>
+        row.observed_requests || row.policy_source === "explicit" || row.conflict_requests
+      );
+      document.querySelector("#policy-agents").innerHTML = visibleAgents.length
+        ? visibleAgents.map(row => {
+          const conflictPaths = row.conflicts.map(item => `${item.path} (${item.requests})`).join(", ");
+          const rulePaths = row.disallow.join(", ");
+          const pathText = conflictPaths || rulePaths || "—";
+          return `<tr><td><strong>${escapeHtml(row.agent)}</strong><small>${escapeHtml(row.provider)} · ${escapeHtml(row.purpose)}</small></td><td>${escapeHtml(row.site)}</td><td><span class="policy-pill ${escapeHtml(row.policy)}">${escapeHtml(row.policy)}</span><small>${escapeHtml(row.policy_source)}</small></td><td>${fmt.format(row.observed_requests)}</td><td class="${row.conflict_requests ? "danger-text" : ""}">${fmt.format(row.conflict_requests)}</td><td class="path-cell">${escapeHtml(pathText)}</td></tr>`;
+        }).join("")
+        : '<tr><td colspan="6" class="empty">No explicit AI rules or observed AI requests in this scope.</td></tr>';
+    } catch (error) { showError(error); }
+  }
+
   function unixTime(value) {
     return value ? escapeHtml(new Date(value * 1000).toLocaleString()) : "Never";
   }
@@ -1402,6 +1520,11 @@
     setupSiteFilter(() => { syncUrl(); loadAiCrawlers(); });
     loadAiCrawlers();
   }
+  if (page === "ai-policy") {
+    setupFilters(loadAiPolicy);
+    setupSiteFilter(() => { syncUrl(); loadAiPolicy(); });
+    loadAiPolicy();
+  }
   if (page === "feed-readers") {
     setupFilters(loadFeedReaders);
     setupSiteFilter(() => { syncUrl(); loadFeedReaders(); });
@@ -1412,6 +1535,11 @@
     setupBriefings();
     setupSiteFilter(() => loadBriefing(true));
     loadBriefing();
+  }
+  if (page === "changes") {
+    setupFilters(loadChanges);
+    setupSiteFilter(() => { syncUrl(); loadChanges(); });
+    loadChanges();
   }
   if (page === "pulse") {
     setupSiteFilter(() => {

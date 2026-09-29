@@ -19,6 +19,7 @@ from .auth import login_required
 from .bots import AI_AGENTS
 from .db import connect
 from .privacy import INDIVIDUAL_ACTIVITY_PRIVATE_SITES
+from .robots import fetch_robots_policies, parse_robots, path_allowed, policy_for
 from .rollup import PROBE_PATH_PREFIXES, PROBE_PATHS
 
 
@@ -443,6 +444,466 @@ def ai_crawlers():
         "totals": totals,
         "limited": totals_row["sightings"] > len(rows),
         "scope": {"site": site["name"] if site else None},
+    })
+
+
+def _changed_rows(
+    current: dict[tuple[Any, ...], int], previous: dict[tuple[Any, ...], int],
+    fields: tuple[str, ...], limit: int = 12,
+) -> list[dict[str, Any]]:
+    rows = []
+    for key in current.keys() | previous.keys():
+        now = current.get(key, 0)
+        before = previous.get(key, 0)
+        change = now - before
+        if not change:
+            continue
+        if not before:
+            category = "new"
+        elif not now:
+            category = "vanished"
+        elif change > 0:
+            category = "rising"
+        else:
+            category = "falling"
+        rows.append({
+            **dict(zip(fields, key)),
+            "requests": now,
+            "previous_requests": before,
+            "change": change,
+            "change_percent": _percent_change(now, before),
+            "category": category,
+        })
+    rows.sort(key=lambda row: (
+        -abs(row["change"]), -row["requests"],
+        *(str(row[field]) for field in fields),
+    ))
+    return rows[:limit]
+
+
+def _change_narrative(
+    summary: dict[str, Any], pages: list[dict[str, Any]],
+    referrers: list[dict[str, Any]], audience: dict[str, Any],
+    errors: dict[str, Any],
+) -> list[str]:
+    current = summary["requests"]
+    previous = summary["previous_requests"]
+    percent = summary["change_percent"]
+    if not previous:
+        lines = [
+            f"This window recorded {current:,} human page requests; the preceding "
+            "window has no comparable traffic."
+        ]
+    elif current == previous:
+        lines = [f"Human page traffic held steady at {current:,} requests."]
+    else:
+        direction = "rose" if current > previous else "fell"
+        lines = [
+            f"Human page traffic {direction} {abs(percent):g}% to {current:,} "
+            f"requests, from {previous:,} in the preceding equal-length window."
+        ]
+    if pages:
+        leader = pages[0]
+        verb = "added" if leader["change"] > 0 else "lost"
+        lines.append(
+            f"The largest page movement was {leader['site']}{leader['path']}, "
+            f"which {verb} {abs(leader['change']):,} requests."
+        )
+    positive_sources = [row for row in referrers if row["change"] > 0]
+    if positive_sources:
+        source = positive_sources[0]
+        lines.append(
+            f"{source['source']} was the strongest referral change, sending "
+            f"{source['requests']:,} visits ({source['change']:+,} versus before)."
+        )
+    ai_change = audience["ai"]["change"]
+    bot_change = audience["bots"]["change"]
+    if ai_change:
+        direction = "increased" if ai_change > 0 else "decreased"
+        lines.append(
+            f"Recognized AI crawler activity {direction} by {abs(ai_change):,} "
+            f"requests; all bot traffic changed by {bot_change:+,}."
+        )
+    if errors["change"]:
+        direction = "increased" if errors["change"] > 0 else "improved"
+        lines.append(
+            f"Human 4xx/5xx responses {direction} by {abs(errors['change']):,} "
+            f"to {errors['requests']:,}."
+        )
+    return lines
+
+
+@api_bp.get("/changes")
+@login_required
+def changes():
+    start_text, end_text = _date_range()
+    start = date.fromisoformat(start_text)
+    end = date.fromisoformat(end_text)
+    span = (end - start).days + 1
+    previous_end = start - timedelta(days=1)
+    previous_start = previous_end - timedelta(days=span - 1)
+    previous_start_text = previous_start.isoformat()
+    previous_end_text = previous_end.isoformat()
+    limit = _int_arg("limit", 12, 1, 50)
+    private_placeholders = ",".join("?" for _ in INDIVIDUAL_ACTIVITY_PRIVATE_SITES)
+
+    with _conn() as conn:
+        site = _requested_site(conn)
+        site_id = site["id"] if site else None
+        site_clause = "AND site_id=?" if site else ""
+        total_parameters: tuple[Any, ...] = (
+            start_text, end_text, start_text, end_text,
+            previous_start_text, previous_end_text,
+            previous_start_text, previous_end_text,
+            start_text, end_text, previous_start_text, previous_end_text,
+            start_text, end_text, previous_start_text, previous_end_text,
+            *((site_id,) if site else ()),
+        )
+        totals = dict(conn.execute(
+            f"""
+            SELECT
+              COALESCE(SUM(CASE WHEN day BETWEEN ? AND ? AND include_bots=0
+                THEN requests ELSE 0 END),0) requests,
+              COALESCE(SUM(CASE WHEN day BETWEEN ? AND ? AND include_bots=0
+                THEN unique_visitors ELSE 0 END),0) visitor_days,
+              COALESCE(SUM(CASE WHEN day BETWEEN ? AND ? AND include_bots=0
+                THEN requests ELSE 0 END),0) previous_requests,
+              COALESCE(SUM(CASE WHEN day BETWEEN ? AND ? AND include_bots=0
+                THEN unique_visitors ELSE 0 END),0) previous_visitor_days,
+              COALESCE(SUM(CASE WHEN day BETWEEN ? AND ? AND include_bots=1
+                THEN requests ELSE 0 END),0) all_requests,
+              COALESCE(SUM(CASE WHEN day BETWEEN ? AND ? AND include_bots=1
+                THEN requests ELSE 0 END),0) previous_all_requests,
+              COALESCE(SUM(CASE WHEN day BETWEEN ? AND ? AND include_bots=0
+                THEN status_4xx+status_5xx ELSE 0 END),0) errors,
+              COALESCE(SUM(CASE WHEN day BETWEEN ? AND ? AND include_bots=0
+                THEN status_4xx+status_5xx ELSE 0 END),0) previous_errors
+            FROM daily_filter
+            WHERE include_assets=0 {site_clause}
+            """,
+            total_parameters,
+        ).fetchone())
+
+        dimensions_allowed = not (
+            site and site["name"] in INDIVIDUAL_ACTIVITY_PRIVATE_SITES
+        )
+        joined_site_clause = "AND x.site_id=?" if site else ""
+        common_parameters: tuple[Any, ...] = (
+            previous_start_text, end_text, *INDIVIDUAL_ACTIVITY_PRIVATE_SITES,
+            *((site_id,) if site else ()),
+        )
+
+        def dimensions(table: str, columns: str, group: str, where: str = ""):
+            if not dimensions_allowed:
+                return []
+            return list(conn.execute(
+                f"""
+                SELECT s.name site, {columns},
+                  SUM(CASE WHEN x.day BETWEEN '{start_text}' AND '{end_text}'
+                    THEN x.human_nonasset_requests ELSE 0 END) requests,
+                  SUM(CASE WHEN x.day BETWEEN '{previous_start_text}' AND '{previous_end_text}'
+                    THEN x.human_nonasset_requests ELSE 0 END) previous_requests
+                FROM {table} x JOIN sites s ON s.id=x.site_id
+                WHERE x.day BETWEEN ? AND ? {where}
+                  AND s.name NOT IN ({private_placeholders}) {joined_site_clause}
+                GROUP BY x.site_id, {group}
+                """,
+                common_parameters,
+            ))
+
+        def row_maps(rows, keys):
+            current, previous = {}, {}
+            for row in rows:
+                key = tuple(row[name] for name in keys)
+                current[key] = row["requests"] or 0
+                previous[key] = row["previous_requests"] or 0
+            return current, previous
+
+        page_rows = dimensions(
+            "daily_page_status", "x.path", "x.path",
+            "AND x.status BETWEEN 200 AND 399",
+        )
+        page_current, page_previous = row_maps(page_rows, ("site", "path"))
+        page_changes = _changed_rows(
+            page_current, page_previous, ("site", "path"), limit
+        )
+
+        referrer_rows = dimensions(
+            "daily_page_referrer", "LOWER(x.referrer_host) source",
+            "LOWER(x.referrer_host)",
+        )
+        ref_current, ref_previous = row_maps(referrer_rows, ("site", "source"))
+        referrer_changes = _changed_rows(
+            ref_current, ref_previous, ("site", "source"), limit
+        )
+
+        country_rows = dimensions("daily_country", "x.country", "x.country")
+        country_current, country_previous = row_maps(country_rows, ("site", "country"))
+        country_changes = _changed_rows(
+            country_current, country_previous, ("site", "country"), limit
+        )
+
+        error_rows = dimensions(
+            "daily_page_status", "x.path", "x.path", "AND x.status>=400"
+        )
+        error_current, error_previous = row_maps(error_rows, ("site", "path"))
+        error_changes = _changed_rows(
+            error_current, error_previous, ("site", "path"), limit
+        )
+
+        families = tuple(AI_AGENTS)
+        family_placeholders = ",".join("?" for _ in families)
+        agent_site_clause = "AND x.site_id=?" if site else ""
+        agent_parameters: tuple[Any, ...] = (
+            previous_start_text, end_text, *families,
+            *INDIVIDUAL_ACTIVITY_PRIVATE_SITES, *((site_id,) if site else ()),
+        )
+        agent_rows = [] if not dimensions_allowed else list(conn.execute(
+            f"""
+            SELECT s.name site, x.ua_family agent,
+              SUM(CASE WHEN x.day BETWEEN ? AND ?
+                THEN x.requests-x.asset_requests ELSE 0 END) requests,
+              SUM(CASE WHEN x.day BETWEEN ? AND ?
+                THEN x.requests-x.asset_requests ELSE 0 END) previous_requests
+            FROM daily_page_agent x JOIN sites s ON s.id=x.site_id
+            WHERE x.day BETWEEN ? AND ? AND x.is_bot=1
+              AND x.ua_family IN ({family_placeholders})
+              AND s.name NOT IN ({private_placeholders}) {agent_site_clause}
+            GROUP BY x.site_id, x.ua_family
+            """,
+            (
+                start_text, end_text, previous_start_text, previous_end_text,
+                *agent_parameters,
+            ),
+        ))
+        ai_requests = sum(row["requests"] or 0 for row in agent_rows)
+        ai_previous = sum(row["previous_requests"] or 0 for row in agent_rows)
+        agent_current, agent_previous = row_maps(agent_rows, ("site", "agent"))
+        agent_changes = _changed_rows(
+            agent_current, agent_previous, ("site", "agent"), limit
+        )
+
+        feed_site_clause = "AND x.site_id=?" if site else ""
+        feed_rows = [] if not dimensions_allowed else list(conn.execute(
+            f"""
+            SELECT s.name site, x.reader,
+              SUM(CASE WHEN x.day BETWEEN ? AND ? THEN x.requests ELSE 0 END) requests,
+              SUM(CASE WHEN x.day BETWEEN ? AND ? THEN x.requests ELSE 0 END) previous_requests
+            FROM daily_feed_reader x JOIN sites s ON s.id=x.site_id
+            WHERE x.day BETWEEN ? AND ?
+              AND s.name NOT IN ({private_placeholders}) {feed_site_clause}
+            GROUP BY x.site_id, x.reader
+            """,
+            (
+                start_text, end_text, previous_start_text, previous_end_text,
+                previous_start_text, end_text, *INDIVIDUAL_ACTIVITY_PRIVATE_SITES,
+                *((site_id,) if site else ()),
+            ),
+        ))
+        feed_requests = sum(row["requests"] or 0 for row in feed_rows)
+        feed_previous = sum(row["previous_requests"] or 0 for row in feed_rows)
+
+    summary = {
+        "requests": totals["requests"],
+        "previous_requests": totals["previous_requests"],
+        "change": totals["requests"] - totals["previous_requests"],
+        "change_percent": _percent_change(
+            totals["requests"], totals["previous_requests"]
+        ),
+        "visitor_days": totals["visitor_days"],
+        "previous_visitor_days": totals["previous_visitor_days"],
+        "visitor_change": totals["visitor_days"] - totals["previous_visitor_days"],
+    }
+    bots = totals["all_requests"] - totals["requests"]
+    previous_bots = totals["previous_all_requests"] - totals["previous_requests"]
+    audience = {
+        "bots": {
+            "requests": bots, "previous_requests": previous_bots,
+            "change": bots - previous_bots,
+        },
+        "ai": {
+            "requests": ai_requests, "previous_requests": ai_previous,
+            "change": ai_requests - ai_previous,
+        },
+        "feeds": {
+            "requests": feed_requests, "previous_requests": feed_previous,
+            "change": feed_requests - feed_previous,
+        },
+        "agents": agent_changes,
+    }
+    errors = {
+        "requests": totals["errors"],
+        "previous_requests": totals["previous_errors"],
+        "change": totals["errors"] - totals["previous_errors"],
+        "paths": error_changes,
+    }
+    return jsonify({
+        "window": {
+            "from": start_text, "to": end_text, "days": span,
+            "previous_from": previous_start_text,
+            "previous_to": previous_end_text,
+        },
+        "scope": {"site": site["name"] if site else None},
+        "privacy": {
+            "protected": not dimensions_allowed,
+            "excluded_sites": list(INDIVIDUAL_ACTIVITY_PRIVATE_SITES),
+        },
+        "summary": summary,
+        "narrative": _change_narrative(
+            summary, page_changes, referrer_changes, audience, errors
+        ),
+        "pages": page_changes,
+        "referrers": referrer_changes,
+        "countries": country_changes,
+        "audience": audience,
+        "errors": errors,
+    })
+
+
+@api_bp.get("/ai-policy")
+@login_required
+def ai_policy():
+    start, end = _date_range()
+    with _conn() as conn:
+        site = _requested_site(conn)
+        site_names = [site["name"]] if site else [
+            row["name"] for row in conn.execute("SELECT name FROM sites ORDER BY name")
+        ]
+        visible_names = [
+            name for name in site_names
+            if name not in INDIVIDUAL_ACTIVITY_PRIVATE_SITES
+        ]
+        observations: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
+        if visible_names:
+            site_placeholders = ",".join("?" for _ in visible_names)
+            family_placeholders = ",".join("?" for _ in AI_AGENTS)
+            for row in conn.execute(
+                f"""
+                SELECT s.name site, x.ua_family agent, x.path,
+                       SUM(x.requests-x.asset_requests) requests
+                FROM daily_page_agent x JOIN sites s ON s.id=x.site_id
+                WHERE x.day BETWEEN ? AND ? AND x.is_bot=1
+                  AND x.ua_family IN ({family_placeholders})
+                  AND s.name IN ({site_placeholders})
+                GROUP BY x.site_id, x.ua_family, x.path
+                HAVING SUM(x.requests-x.asset_requests)>0
+                ORDER BY requests DESC, x.path
+                """,
+                (start, end, *AI_AGENTS, *visible_names),
+            ):
+                observations[(row["site"], row["agent"])].append(dict(row))
+
+    fetched = fetch_robots_policies(site_names)
+    site_rows = []
+    agent_rows = []
+    for site_name in site_names:
+        fetched_policy = fetched[site_name]
+        status = fetched_policy["status"]
+        groups = parse_robots(fetched_policy.get("text", ""))
+        protected = site_name in INDIVIDUAL_ACTIVITY_PRIVATE_SITES
+        site_conflicts = 0
+        site_observed = 0
+        explicit_agents = 0
+        restricted_agents = 0
+        for agent, (provider, purpose) in AI_AGENTS.items():
+            source, rules = policy_for(groups, agent)
+            if source == "explicit":
+                explicit_agents += 1
+            disallows = [rule.path for rule in rules if not rule.allow]
+            allows = [rule.path for rule in rules if rule.allow]
+            if disallows:
+                restricted_agents += 1
+            observed_paths = [] if protected else observations.get(
+                (site_name, agent), []
+            )
+            conflicts = [
+                {"path": item["path"], "requests": item["requests"]}
+                for item in observed_paths if not path_allowed(rules, item["path"])
+            ] if status == "available" else []
+            observed_requests = sum(item["requests"] for item in observed_paths)
+            conflict_requests = sum(item["requests"] for item in conflicts)
+            site_observed += observed_requests
+            site_conflicts += conflict_requests
+            if status != "available":
+                policy_label = "open" if status == "not_found" else "unknown"
+            elif disallows:
+                policy_label = "restricted"
+            else:
+                policy_label = "open"
+            agent_rows.append({
+                "site": site_name,
+                "agent": agent,
+                "provider": provider,
+                "purpose": purpose,
+                "policy": policy_label,
+                "policy_source": source if status == "available" else status,
+                "disallow": disallows[:8],
+                "allow": allows[:8],
+                "observed_requests": observed_requests,
+                "observed_paths": len(observed_paths),
+                "conflict_requests": conflict_requests,
+                "conflicts": conflicts[:8],
+                "protected": protected,
+            })
+        site_rows.append({
+            "site": site_name,
+            "robots_url": fetched_policy["url"],
+            "robots_status": status,
+            "http_status": fetched_policy.get("http_status"),
+            "explicit_agents": explicit_agents,
+            "restricted_agents": restricted_agents,
+            "observed_requests": site_observed,
+            "conflict_requests": site_conflicts,
+            "protected": protected,
+        })
+    agent_rows.sort(key=lambda row: (
+        -row["conflict_requests"], -row["observed_requests"],
+        row["site"], row["agent"],
+    ))
+    observed = sum(row["observed_requests"] for row in site_rows)
+    conflicts = sum(row["conflict_requests"] for row in site_rows)
+    unavailable = sum(
+        row["robots_status"] not in {"available", "not_found"}
+        for row in site_rows
+    )
+    if conflicts:
+        narrative = (
+            f"Webstats found {conflicts:,} observed AI request"
+            f"{'s' if conflicts != 1 else ''} to paths disallowed by the current "
+            "robots.txt rules. Treat these as policy conflicts to investigate, not "
+            "proof of intent."
+        )
+    elif observed:
+        narrative = (
+            f"No policy conflicts were found among {observed:,} observed AI requests "
+            "in this window."
+        )
+    else:
+        narrative = "No recognized AI crawler requests were observed in this window."
+    return jsonify({
+        "from": start,
+        "to": end,
+        "generated_at": int(datetime.now(timezone.utc).timestamp()),
+        "scope": {"site": site["name"] if site else None},
+        "privacy": {
+            "excluded_sites": list(INDIVIDUAL_ACTIVITY_PRIVATE_SITES),
+            "protected": bool(site and site["name"] in INDIVIDUAL_ACTIVITY_PRIVATE_SITES),
+        },
+        "totals": {
+            "sites": len(site_rows),
+            "robots_available": sum(
+                row["robots_status"] == "available" for row in site_rows
+            ),
+            "unavailable": unavailable,
+            "observed_requests": observed,
+            "conflict_requests": conflicts,
+            "agents_observed": len({
+                row["agent"] for row in agent_rows if row["observed_requests"]
+            }),
+        },
+        "narrative": narrative,
+        "sites": site_rows,
+        "agents": agent_rows,
     })
 
 

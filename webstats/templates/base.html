@@ -18,6 +18,7 @@
       <a href="{{ url_for('views.overview') }}">Overview</a>
       <a class="inbox-nav-link" href="{{ url_for('views.inbox') }}">Inbox<span id="inbox-count" class="nav-count hidden"></span></a>
       <a href="{{ url_for('views.briefings') }}">Briefings</a>
+      <a href="{{ url_for('views.changes') }}">Changes</a>
       <a href="{{ url_for('views.pulse') }}">Pulse</a>
       <a href="{{ url_for('views.errors') }}">Errors</a>
       <a href="{{ url_for('views.journeys') }}">Paths</a>
@@ -26,6 +27,7 @@
       <a href="{{ url_for('views.almanac') }}">Almanac</a>
       <a href="{{ url_for('views.feed_readers') }}">Feeds</a>
       <a href="{{ url_for('views.ai_crawlers') }}">AI crawlers</a>
+      <a href="{{ url_for('views.ai_policy') }}">AI policy</a>
       <a href="{{ url_for('views.live') }}">Live</a>
       <a href="{{ url_for('views.health') }}">Health</a>
       <form action="{{ url_for('auth.logout') }}" method="post">

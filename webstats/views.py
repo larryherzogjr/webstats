@@ -71,6 +71,15 @@ def ai_crawlers():
     )
 
 
+@views_bp.get("/ai-policy")
+@login_required
+def ai_policy():
+    return render_template(
+        "ai_policy.html", server_today=_server_today(), force_bots=True,
+        hide_assets=True, site_filter=True,
+    )
+
+
 @views_bp.get("/feed-readers")
 @login_required
 def feed_readers():
@@ -93,6 +102,15 @@ def almanac():
 @login_required
 def briefings():
     return render_template("briefings.html", server_today=_server_today())
+
+
+@views_bp.get("/changes")
+@login_required
+def changes():
+    return render_template(
+        "changes.html", server_today=_server_today(), force_bots=True,
+        hide_assets=True, site_filter=True,
+    )
 
 
 @views_bp.get("/pulse")

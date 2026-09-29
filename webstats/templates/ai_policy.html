@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+{% block title %}AI Policy Observatory | Webstats{% endblock %}
+{% block page_id %}ai-policy{% endblock %}
+{% block content %}
+<div class="page-heading">
+  <div><p class="eyebrow">Published rules vs observed behavior</p><h1>AI Policy Observatory</h1></div>
+  <p id="range-label" class="range-label"></p>
+</div>
+{% include "_filters.html" %}
+<div id="page-error" class="alert hidden" role="alert"></div>
+<div id="policy-privacy" class="alert hidden" role="status"></div>
+<section class="panel policy-hero">
+  <div class="panel-heading">
+    <div><p class="eyebrow">Current-policy check</p><h2 id="policy-heading">Reading robots.txt</h2></div>
+    <span class="legend-note">Live policy, historical traffic</span>
+  </div>
+  <p id="policy-narrative" class="pulse-summary"></p>
+</section>
+<section id="policy-metrics" class="metric-grid" aria-label="Policy summary"></section>
+<section class="panel">
+  <div class="panel-heading">
+    <div><p class="eyebrow">Site posture</p><h2>Published AI rules</h2></div>
+    <span class="legend-note">Fetched from each configured site</span>
+  </div>
+  <div id="policy-sites" class="policy-site-grid"></div>
+</section>
+<section class="panel">
+  <div class="panel-heading">
+    <div><p class="eyebrow">Agent ledger</p><h2>Rules and observed requests</h2></div>
+    <span class="legend-note">Conflicts appear first</span>
+  </div>
+  <div class="table-wrap"><table><thead><tr><th>Agent</th><th>Site</th><th>Policy</th><th>Observed</th><th>Conflicts</th><th>Paths</th></tr></thead><tbody id="policy-agents"></tbody></table></div>
+</section>
+<p class="muted methodology-note">The Observatory fetches the current public robots.txt and compares its user-agent rules with recognized AI crawler paths in the selected period. A “conflict” means a request matched a current Disallow rule; it is a signal to investigate, not proof that the same rule existed when the request occurred or that a crawler acted intentionally. Privacy-protected page activity is never shown.</p>
+{% endblock %}
