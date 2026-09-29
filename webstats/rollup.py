@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 from typing import Iterable, Optional
 from zoneinfo import ZoneInfo
 
-from .bots import AI_AGENTS
+from .bots import AI_AGENTS, classify_feed_reader
 
 
 def maintain_rollups(
@@ -34,7 +34,7 @@ def recompute_day(conn: sqlite3.Connection, day: str) -> None:
         "daily_site", "daily_traffic", "daily_filter", "daily_path",
         "daily_referrer", "daily_page_referrer", "daily_agent",
         "daily_page_agent", "daily_page_country", "daily_page_status",
-        "daily_country", "daily_status", "daily_404",
+        "daily_feed_reader", "daily_country", "daily_status", "daily_404",
     )
     for table in tables:
         conn.execute(f"DELETE FROM {table} WHERE day = ?", (day,))
@@ -175,7 +175,51 @@ def recompute_day(conn: sqlite3.Connection, day: str) -> None:
         """,
         (day,),
     )
+    _refresh_feed_readers_for_day(conn, day)
     _refresh_events_for_day(conn, day)
+
+
+def _refresh_feed_readers_for_day(conn: sqlite3.Connection, day: str) -> None:
+    observations: dict[tuple[int, str, str, str], dict[str, int | None]] = {}
+    for row in conn.execute(
+        """
+        SELECT site_id, day, path, user_agent, ts
+        FROM requests WHERE day=? AND is_asset=0 ORDER BY ts, id
+        """,
+        (day,),
+    ):
+        classified = classify_feed_reader(row["user_agent"])
+        if classified is None:
+            continue
+        reader, subscribers = classified
+        key = (row["site_id"], row["day"], row["path"], reader)
+        item = observations.setdefault(
+            key,
+            {
+                "requests": 0,
+                "reported_subscribers": None,
+                "first_seen": row["ts"],
+                "last_seen": row["ts"],
+            },
+        )
+        item["requests"] = int(item["requests"] or 0) + 1
+        item["last_seen"] = row["ts"]
+        if subscribers is not None:
+            item["reported_subscribers"] = subscribers
+
+    conn.executemany(
+        """
+        INSERT INTO daily_feed_reader(
+            site_id, day, path, reader, requests, reported_subscribers,
+            first_seen, last_seen
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            (*key, values["requests"], values["reported_subscribers"],
+             values["first_seen"], values["last_seen"])
+            for key, values in observations.items()
+        ),
+    )
 
 
 def _upsert_event(conn: sqlite3.Connection, row: sqlite3.Row, kind: str) -> None:

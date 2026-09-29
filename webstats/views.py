@@ -70,6 +70,17 @@ def ai_crawlers():
     )
 
 
+@views_bp.get("/feed-readers")
+@login_required
+def feed_readers():
+    return render_template(
+        "feed_readers.html",
+        server_today=_server_today(),
+        force_bots=True,
+        hide_assets=True,
+    )
+
+
 @views_bp.get("/health")
 @login_required
 def health():

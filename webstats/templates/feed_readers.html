@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block title %}Feed readers | Webstats{% endblock %}
+{% block page_id %}feed-readers{% endblock %}
+{% block content %}
+<div class="page-heading">
+  <div><p class="eyebrow">Syndication pulse</p><h1>RSS readership</h1></div>
+  <p id="range-label" class="range-label"></p>
+</div>
+{% include "_filters.html" %}
+<div id="page-error" class="alert hidden" role="alert"></div>
+<section id="feed-metrics" class="metric-grid" aria-label="Feed reader metrics"></section>
+<section class="panel chart-panel">
+  <div class="panel-heading">
+    <div><p class="eyebrow">Reader reports</p><h2>Reported subscriptions</h2></div>
+    <span class="legend-note">Gaps mean no reader supplied a count that day</span>
+  </div>
+  <div class="chart-wrap"><canvas id="feed-chart"></canvas></div>
+</section>
+<section class="panel">
+  <div class="panel-heading">
+    <div><p class="eyebrow">Observed in the logs</p><h2>Readers and feeds</h2></div>
+    <span class="legend-note">A dash means the reader does not report subscriber totals</span>
+  </div>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Reader</th><th>Site</th><th>Feed</th><th>Latest</th><th>Peak</th><th>First seen</th><th>Last seen</th><th>Fetches</th></tr></thead>
+    <tbody id="feed-sightings"></tbody>
+  </table></div>
+</section>
+<p class="muted methodology-note">Counts come only from feed readers that explicitly include a subscriber total in their request. Fetches and unreported readers are shown separately; neither is treated as a person count.</p>
+{% endblock %}

@@ -127,6 +127,34 @@ class RollupTests(unittest.TestCase):
             ("/essay", 200, 2, 1),
         )
 
+    def test_feed_reader_rollup_keeps_reported_counts_and_observations(self):
+        site_id = site_id_map(self.conn)["example.com"]
+        rows = [
+            (
+                "source-inoreader", "fingerprint-inoreader", site_id, 1790600000,
+                "2026-09-28", "reader", "GET", "/feed.xml", None, 200, 10,
+                None, None,
+                "Inoreader/1.0 (+http://www.inoreader.com/feed-fetcher; 7 subscribers; )",
+                "Inoreader", "Other", 1, 0, "US",
+            ),
+            (
+                "source-feedly", "fingerprint-feedly", site_id, 1790600001,
+                "2026-09-28", "reader-2", "GET", "/feed.xml", None, 200, 10,
+                None, None, "Feedly/1.0", "Feedly", "Other", 1, 0, "US",
+            ),
+        ]
+        insert_requests(self.conn, rows)
+        recompute_day(self.conn, "2026-09-28")
+        recompute_day(self.conn, "2026-09-28")
+
+        observed = {
+            row["reader"]: (row["requests"], row["reported_subscribers"])
+            for row in self.conn.execute(
+                "SELECT reader, requests, reported_subscribers FROM daily_feed_reader"
+            )
+        }
+        self.assertEqual(observed, {"Inoreader": (1, 7), "Feedly": (1, None)})
+
 
 if __name__ == "__main__":
     unittest.main()

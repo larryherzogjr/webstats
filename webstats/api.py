@@ -252,6 +252,93 @@ def ai_crawlers():
     })
 
 
+@api_bp.get("/feed-readers")
+@login_required
+def feed_readers():
+    start, end = _date_range()
+    limit = _int_arg("limit", 250, 1, 500)
+    with _conn() as conn:
+        stored = [
+            dict(row)
+            for row in conn.execute(
+                """
+                SELECT f.day, s.name site, f.path, f.reader, f.requests,
+                       f.reported_subscribers, f.first_seen, f.last_seen
+                FROM daily_feed_reader f JOIN sites s ON s.id=f.site_id
+                WHERE f.day BETWEEN ? AND ?
+                ORDER BY f.day, f.last_seen
+                """,
+                (start, end),
+            )
+        ]
+
+    sightings: dict[tuple[str, str, str], dict[str, Any]] = {}
+    daily = {
+        day: {"bucket": day, "requests": 0, "reported_subscribers": None}
+        for day in _day_buckets(start, end)
+    }
+    for row in stored:
+        key = (row["site"], row["path"], row["reader"])
+        item = sightings.setdefault(
+            key,
+            {
+                "site": row["site"],
+                "path": row["path"],
+                "reader": row["reader"],
+                "requests": 0,
+                "latest_subscribers": None,
+                "first_reported_subscribers": None,
+                "peak_subscribers": None,
+                "first_seen": row["first_seen"],
+                "last_seen": row["last_seen"],
+            },
+        )
+        item["requests"] += row["requests"]
+        item["first_seen"] = min(item["first_seen"], row["first_seen"])
+        item["last_seen"] = max(item["last_seen"], row["last_seen"])
+        count = row["reported_subscribers"]
+        if count is not None:
+            if item["first_reported_subscribers"] is None:
+                item["first_reported_subscribers"] = count
+            item["latest_subscribers"] = count
+            item["peak_subscribers"] = max(item["peak_subscribers"] or 0, count)
+            current = daily[row["day"]]["reported_subscribers"]
+            daily[row["day"]]["reported_subscribers"] = (current or 0) + count
+        daily[row["day"]]["requests"] += row["requests"]
+
+    rows = sorted(
+        sightings.values(),
+        key=lambda item: (
+            -(item["latest_subscribers"] if item["latest_subscribers"] is not None else -1),
+            -item["last_seen"], item["site"], item["path"], item["reader"],
+        ),
+    )
+    latest = sum(
+        item["latest_subscribers"] for item in rows
+        if item["latest_subscribers"] is not None
+    )
+    first = sum(
+        item["first_reported_subscribers"] for item in rows
+        if item["first_reported_subscribers"] is not None
+    )
+    totals = {
+        "reported_subscribers": latest,
+        "subscriber_change": latest - first,
+        "readers": len({item["reader"] for item in rows}),
+        "feeds": len({(item["site"], item["path"]) for item in rows}),
+        "requests": sum(item["requests"] for item in rows),
+        "reporting_feeds": sum(item["latest_subscribers"] is not None for item in rows),
+    }
+    return jsonify({
+        "from": start,
+        "to": end,
+        "series": list(daily.values()),
+        "sightings": rows[:limit],
+        "totals": totals,
+        "limited": len(rows) > limit,
+    })
+
+
 @api_bp.get("/overview")
 @login_required
 def overview():

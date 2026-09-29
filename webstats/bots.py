@@ -3,7 +3,28 @@
 from __future__ import annotations
 
 import re
-from typing import Tuple
+from typing import Optional, Tuple
+
+
+FEED_READERS = (
+    ("inoreader", "Inoreader"),
+    ("newsblur feed fetcher", "NewsBlur"),
+    ("feedly/", "Feedly"),
+    ("feedspot", "Feedspot"),
+    ("feedfetcher-google", "Google Feedfetcher"),
+    ("feedbin", "Feedbin"),
+    ("freshrss", "FreshRSS"),
+    ("miniflux", "Miniflux"),
+    ("tiny tiny rss", "Tiny Tiny RSS"),
+    ("tt-rss", "Tiny Tiny RSS"),
+    ("newsboat", "Newsboat"),
+    ("netnewswire", "NetNewsWire"),
+    ("reeder/", "Reeder"),
+)
+
+SUBSCRIBER_COUNT = re.compile(
+    r"(?<![-\d])(?P<count>\d[\d,]*)\s+subscribers?\b", re.IGNORECASE
+)
 
 
 KNOWN_BOTS = (
@@ -58,6 +79,9 @@ def classify_user_agent(user_agent: str) -> Tuple[str, bool]:
     lowered = ua.lower()
     if not ua or ua == "-":
         return "Empty user agent", True
+    feed_reader = classify_feed_reader(ua)
+    if feed_reader is not None:
+        return feed_reader[0], True
     for needle, family in KNOWN_BOTS:
         if needle.lower() in lowered:
             return family, True
@@ -69,6 +93,21 @@ def classify_user_agent(user_agent: str) -> Tuple[str, bool]:
     if not ua.startswith("Mozilla/"):
         return "Non-browser client", True
     return browser_family(ua), False
+
+
+def classify_feed_reader(user_agent: str) -> Optional[tuple[str, Optional[int]]]:
+    """Return a recognized reader and any count it explicitly reports."""
+    lowered = (user_agent or "").lower()
+    reader = next(
+        (name for needle, name in FEED_READERS if needle in lowered), None
+    )
+    if reader is None:
+        return None
+    match = SUBSCRIBER_COUNT.search(user_agent)
+    subscribers = int(match.group("count").replace(",", "")) if match else None
+    if subscribers is not None and subscribers > 1_000_000_000:
+        subscribers = None
+    return reader, subscribers
 
 
 def browser_family(user_agent: str) -> str:

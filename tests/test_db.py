@@ -4,7 +4,7 @@ import tempfile
 import unittest
 
 from webstats.config import Config, GeoIPConfig, ServerConfig, SiteConfig, StorageConfig
-from webstats.db import SCHEMA_VERSION, connect, initialize
+from webstats.db import SCHEMA, SCHEMA_VERSION, connect, initialize
 
 
 class DatabaseMigrationTests(unittest.TestCase):
@@ -39,7 +39,8 @@ class DatabaseMigrationTests(unittest.TestCase):
             self.assertTrue(
                 {
                     "daily_page_referrer", "daily_page_agent",
-                    "daily_page_country", "daily_page_status", "events",
+                    "daily_page_country", "daily_page_status",
+                    "daily_feed_reader", "events",
                 } <= tables
             )
 
@@ -120,6 +121,48 @@ class DatabaseMigrationTests(unittest.TestCase):
                 conn.commit()
                 with self.assertRaises(RuntimeError):
                     initialize(conn, self.config(root))
+
+    def test_version_four_reclassifies_and_rolls_up_feed_readers(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            with connect(root / "test.db") as conn:
+                for statement in SCHEMA.split(";"):
+                    if statement.strip():
+                        conn.execute(statement)
+                conn.execute("DELETE FROM schema_version")
+                conn.execute("INSERT INTO schema_version VALUES (4)")
+                conn.execute("INSERT INTO sites(id, name) VALUES (1, 'example.com')")
+                conn.execute("DROP TABLE daily_feed_reader")
+                conn.execute(
+                    """
+                    INSERT INTO requests(
+                        source_key, source_fingerprint, site_id, ts, day,
+                        ip_hash, method, path, status, bytes, user_agent,
+                        ua_family, os_family, is_bot, is_asset
+                    ) VALUES (
+                        'source', 'fingerprint', 1, 1, '2026-09-28',
+                        'reader', 'GET', '/feed.xml', 200, 10,
+                        'Inoreader/1.0 (; 9 subscribers;)',
+                        'Non-browser client', 'Other', 1, 0
+                    )
+                    """
+                )
+                conn.commit()
+
+                initialize(conn, self.config(root))
+                version = conn.execute(
+                    "SELECT version FROM schema_version"
+                ).fetchone()[0]
+                family = conn.execute(
+                    "SELECT ua_family FROM requests"
+                ).fetchone()[0]
+                report = conn.execute(
+                    "SELECT reader, reported_subscribers FROM daily_feed_reader"
+                ).fetchone()
+
+            self.assertEqual(version, SCHEMA_VERSION)
+            self.assertEqual(family, "Inoreader")
+            self.assertEqual(tuple(report), ("Inoreader", 9))
 
 
 if __name__ == "__main__":

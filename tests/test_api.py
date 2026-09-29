@@ -85,6 +85,7 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(page.status_code, 200)
         self.assertIn("/one", page.get_data(as_text=True))
         self.assertEqual(self.client.get("/site/example.com/page").status_code, 400)
+        self.assertEqual(self.client.get("/feed-readers").status_code, 200)
         self.assertEqual(self.client.get("/ai-crawlers").status_code, 200)
         self.assertEqual(self.client.get("/live").status_code, 200)
         self.assertEqual(self.client.get("/health").status_code, 200)
@@ -369,6 +370,51 @@ class ApiTests(unittest.TestCase):
             self.client.get("/api/site/example.com/page?path=%2Funknown").status_code,
             404,
         )
+
+    def test_feed_reader_observations_and_reported_counts(self):
+        with self.log.open("a") as handle:
+            handle.write(
+                line(
+                    "203.0.113.30",
+                    "/feed.xml",
+                    ua=(
+                        "Inoreader/1.0 "
+                        "(+http://www.inoreader.com/feed-fetcher; 3 subscribers; )"
+                    ),
+                )
+            )
+            handle.write(
+                line("203.0.113.31", "/feed.xml", ua="Feedly/1.0")
+            )
+            handle.write(
+                line("203.0.113.32", "/atom.xml", ua="FreshRSS/1.24.3")
+            )
+        ingest_once(self.config)
+        self.authenticate()
+
+        body = self.client.get(
+            "/api/feed-readers?from=2026-09-28&to=2026-09-28"
+        ).get_json()
+        self.assertEqual(
+            body["totals"],
+            {
+                "reported_subscribers": 3,
+                "subscriber_change": 0,
+                "readers": 3,
+                "feeds": 2,
+                "requests": 3,
+                "reporting_feeds": 1,
+            },
+        )
+        self.assertEqual(
+            body["series"],
+            [{"bucket": "2026-09-28", "requests": 3, "reported_subscribers": 3}],
+        )
+        sightings = {row["reader"]: row for row in body["sightings"]}
+        self.assertEqual(sightings["Inoreader"]["latest_subscribers"], 3)
+        self.assertEqual(sightings["Inoreader"]["peak_subscribers"], 3)
+        self.assertIsNone(sightings["Feedly"]["latest_subscribers"])
+        self.assertIsNone(sightings["FreshRSS"]["latest_subscribers"])
 
     def test_invalid_range_is_rejected(self):
         self.authenticate()

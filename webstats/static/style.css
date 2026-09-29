@@ -104,6 +104,7 @@ td:first-child { max-width: 480px; overflow-wrap: anywhere; }
 .status-badge.ok { color: var(--accent); border-color: rgba(110, 231, 199, .4); }
 .status-badge.degraded { color: var(--warning); border-color: rgba(245, 198, 107, .4); }
 footer { color: #60748e; text-align: center; padding: 0 20px 40px; font-size: 11px; }
+.methodology-note { max-width: 920px; margin: 20px auto 0; text-align: center; font-size: 12px; line-height: 1.6; }
 
 .login-page { display: grid; place-items: center; padding: 24px; }
 .login-card { width: min(420px, 100%); padding: 38px; background: rgba(16, 26, 42, .96); border: 1px solid var(--border); border-radius: 22px; box-shadow: var(--shadow); }

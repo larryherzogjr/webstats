@@ -372,6 +372,48 @@
     } catch (error) { showError(error); }
   }
 
+  async function loadFeedReaders() {
+    clearError();
+    try {
+      const data = await api(`/api/feed-readers?${query({ limit: 500 })}`);
+      const hasReports = data.totals.reporting_feeds > 0;
+      const change = data.totals.subscriber_change;
+      document.querySelector("#range-label").textContent = dateLabel(data.from, data.to);
+      document.querySelector("#feed-metrics").innerHTML = [
+        metric("Latest reported subscriptions", hasReports ? fmt.format(data.totals.reported_subscribers) : "Not reported"),
+        metric("Change in range", hasReports ? `${change > 0 ? "+" : ""}${fmt.format(change)}` : "Not reported"),
+        metric("Readers observed", fmt.format(data.totals.readers)),
+        metric("Feeds observed", fmt.format(data.totals.feeds)),
+      ].join("");
+      updateChart("feeds", document.querySelector("#feed-chart"), {
+        type: "line",
+        data: {
+          labels: data.series.map(row => row.bucket),
+          datasets: [{
+            label: "Reported subscriptions",
+            data: data.series.map(row => row.reported_subscribers),
+            borderColor: colors[0],
+            backgroundColor: `${colors[0]}22`,
+            tension: .3,
+            spanGaps: false,
+            fill: true,
+          }],
+        },
+        options: chartOptions,
+      });
+      fillTable("#feed-sightings", data.sightings, [
+        { key: "reader" },
+        { key: "site" },
+        { key: "path" },
+        { key: "latest_subscribers", format: value => value === null ? "—" : fmt.format(value) },
+        { key: "peak_subscribers", format: value => value === null ? "—" : fmt.format(value) },
+        { key: "first_seen", format: unixTime },
+        { key: "last_seen", format: unixTime },
+        { key: "requests", format: fmt.format },
+      ], "No recognized feed readers visited in this range.");
+    } catch (error) { showError(error); }
+  }
+
   async function loadHealth() {
     clearError();
     try {
@@ -409,5 +451,6 @@
     window.setInterval(loadLive, 60000);
   }
   if (page === "ai-crawlers") { setupFilters(loadAiCrawlers); loadAiCrawlers(); }
+  if (page === "feed-readers") { setupFilters(loadFeedReaders); loadFeedReaders(); }
   if (page === "health") loadHealth();
 })();

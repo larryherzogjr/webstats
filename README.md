@@ -20,6 +20,9 @@ log paths, retention, timezone, and log format all live in TOML configuration.
   country classification.
 - A durable event journal for first-time referrers and AI crawler
   sightings, plus a page-level AI crawler field guide.
+- An RSS readership view that recognizes hosted and self-hosted feed clients,
+  charts explicitly reported subscription totals, and keeps unreported readers
+  visible without inventing subscriber counts from fetch frequency.
 - Clickable per-page stories with permanent daily history, lifetime first and
   last sightings, referrers, AI readers, countries, and response codes.
 - Idempotent daily rollups retained after raw request pruning.
@@ -33,10 +36,19 @@ log paths, retention, timezone, and log format all live in TOML configuration.
 - systemd, nginx, health-check, password, and backfill assets.
 - Versioned SQLite migrations and GitHub Actions checks for Python 3.11 and 3.12.
 
-The event journal and AI field guide use permanent daily aggregates. They add
-no persistent visitor identifier and do not extend raw request or IP-hash
-retention. Schema upgrades rebuild the new dimensions for raw days still inside
-the configured retention window; future observations then accumulate normally.
+The event journal, AI field guide, and RSS readership view use permanent daily
+aggregates. They add no persistent visitor identifier and do not extend raw
+request or IP-hash retention. Schema upgrades rebuild the new dimensions for
+raw days still inside the configured retention window; future observations then
+accumulate normally.
+
+RSS subscriber totals are deliberately conservative. Inoreader and some other
+services include an explicit subscriber count in their fetcher user agent;
+Webstats records that reported number. Readers such as current Feedly identify
+their fetcher without promising a count, so Webstats shows the reader and its
+feed requests but labels the subscriber total as unreported. A shared fetch is
+not treated as one person, and repeated fetches are never used as a proxy for
+subscriber growth.
 
 ## Fresh installation in 14 steps
 
@@ -208,6 +220,7 @@ All routes require the admin session except `/api/health`:
 - `GET /api/site/<name>/pages`, `/referrers`, `/status`, `/agents`, `/countries`
 - `GET /api/site/<name>/page?path=/requested/path`
 - `GET /api/events`, `/ai-crawlers`
+- `GET /api/feed-readers`
 - `GET /api/live?minutes=60`
 - `GET /api/health`
 
