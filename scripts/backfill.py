@@ -116,6 +116,19 @@ def run(config_path: str) -> IngestStats:
                                 # source as the configured live log. Using the base
                                 # path preserves keys written before rotation.
                                 source = _source_key(base, inode, line_offset, raw)
+                                legacy_source = _source_key(
+                                    path, inode, line_offset, raw
+                                )
+                                # Older ingest versions used the physical `.1`
+                                # path while finishing a rotated file. Recognize
+                                # that exact key so the first post-upgrade backfill
+                                # cannot duplicate an already stored tail line.
+                                if legacy_source != source and conn.execute(
+                                    "SELECT 1 FROM requests WHERE source_key=?",
+                                    (legacy_source,),
+                                ).fetchone():
+                                    stats.parsed += 1
+                                    continue
                             else:
                                 occurrence_key = (site_id, fingerprint)
                                 archive_occurrences[occurrence_key] += 1

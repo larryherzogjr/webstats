@@ -22,12 +22,19 @@
     return { from: start.toISOString().slice(0, 10), to: serverToday };
   }
 
+  function validDate(value) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+    const year = Number(value.slice(0, 4));
+    const parsed = new Date(`${value}T12:00:00Z`);
+    return year > 0 && !Number.isNaN(parsed.getTime()) && parsed.toISOString().slice(0, 10) === value;
+  }
+
   function stateFromUrl() {
     const params = new URLSearchParams(window.location.search);
     const fallback = defaultRange(7);
     const from = params.get("from") || fallback.from;
     const to = params.get("to") || fallback.to;
-    const valid = /^\d{4}-\d{2}-\d{2}$/.test(from) && /^\d{4}-\d{2}-\d{2}$/.test(to) && from <= to;
+    const valid = validDate(from) && validDate(to) && from <= to;
     return {
       range: valid ? { from, to } : fallback,
       bots: params.get("bots") === "1",
@@ -106,7 +113,7 @@
       });
     });
     document.querySelector("#apply-dates")?.addEventListener("click", () => {
-      if (!from.value || !to.value || from.value > to.value) return showError(new Error("Choose a valid date range."));
+      if (!validDate(from.value) || !validDate(to.value) || from.value > to.value) return showError(new Error("Choose a valid date range."));
       range = { from: from.value, to: to.value };
       document.querySelectorAll("[data-days]").forEach(item => item.classList.remove("active"));
       pagesOffset = 0;
@@ -220,15 +227,16 @@
         api(`/api/site/${encodeURIComponent(site)}/agents?${suffix}`),
         api(`/api/site/${encodeURIComponent(site)}/countries?${suffix}`),
       ]);
+      const actualInterval = series.interval;
       updateChart("site", document.querySelector("#site-chart"), {
         type: "line",
-        data: { labels: series.series.map(row => interval === "hour" ? row.bucket.slice(11, 16) : row.bucket), datasets: [
+        data: { labels: series.series.map(row => actualInterval === "hour" ? `${row.bucket.slice(11, 16)} ${row.bucket.slice(-5)}` : row.bucket), datasets: [
           { label: "Requests", data: series.series.map(row => row.requests), borderColor: colors[0], backgroundColor: `${colors[0]}22`, tension: .3, fill: true },
-          { label: interval === "hour" ? "Hourly visitors" : "Daily visitors", data: series.series.map(row => row.unique_visitors), borderColor: colors[1], backgroundColor: "transparent", tension: .3 },
+          { label: actualInterval === "hour" ? "Hourly visitors" : "Daily visitors", data: series.series.map(row => row.unique_visitors), borderColor: colors[1], backgroundColor: "transparent", tension: .3 },
         ] }, options: chartOptions,
       });
       const heading = document.querySelector("#traffic-heading");
-      if (heading) heading.textContent = interval === "hour" ? "Requests and hourly visitors" : "Requests and daily visitors";
+      if (heading) heading.textContent = actualInterval === "hour" ? "Requests and hourly visitors" : "Requests and daily visitors";
       fillTable("#pages-table", pages.pages, [{ key: "path" }, { key: "requests", format: fmt.format }, { key: "unique_visitors", format: fmt.format }]);
       document.querySelector("#pages-prev").disabled = pagesOffset === 0;
       document.querySelector("#pages-next").disabled = pages.pages.length < 25;

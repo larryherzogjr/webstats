@@ -7,6 +7,7 @@ from datetime import date, datetime, timedelta, timezone
 import json
 import os
 from pathlib import Path
+import re
 import sqlite3
 from typing import Any, Iterable, Optional
 from zoneinfo import ZoneInfo
@@ -264,6 +265,12 @@ def timeseries(name: str):
     start, end = _date_range()
     bots, assets = _flags()
     interval = request.args.get("interval", "day")
+    if interval == "hour":
+        config = current_app.config["WEBSTATS_CONFIG"]
+        today = datetime.now(ZoneInfo(config.server.timezone)).date()
+        raw_cutoff = today - timedelta(days=config.storage.raw_retention_days)
+        if date.fromisoformat(start) < raw_cutoff:
+            interval = "day"
     with _conn() as conn:
         site = _site(conn, name)
         if interval == "day":
@@ -403,20 +410,9 @@ def referrers(name: str):
 
 def _referrer_group(host: str) -> str:
     value = host.lower().rstrip(".")
+    if re.search(r"(?:^|\.)google\.(?:[a-z]{2,3}|com?\.[a-z]{2})\Z", value):
+        return "Google"
     groups = (
-        (
-            (
-                "google.com",
-                "google.ca",
-                "google.co.uk",
-                "google.com.au",
-                "google.co.in",
-                "google.co.jp",
-                "google.de",
-                "google.fr",
-            ),
-            "Google",
-        ),
         (("bing.com",), "Bing"),
         (("duckduckgo.com", "duck.com"), "DuckDuckGo"),
         (("search.yahoo.com", "search.yahoo.co.jp", "search.yahoo.co.uk"), "Yahoo"),

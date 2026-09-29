@@ -77,6 +77,70 @@ class BackfillTests(unittest.TestCase):
                     conn.execute("SELECT COUNT(*) FROM requests").fetchone()[0], 1
                 )
 
+    def test_rotated_tail_ingest_then_backfill_does_not_duplicate(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            base = root / "example.access.log"
+            base.write_text(log_line("/before"))
+            config_path = write_config(root)
+            config = load_config(config_path)
+            self.assertEqual(ingest_once(config).inserted, 1)
+
+            with base.open("a") as handle:
+                handle.write(log_line("/tail"))
+            base.rename(Path(str(base) + ".1"))
+            base.write_text(log_line("/after"))
+            self.assertEqual(ingest_once(config).inserted, 2)
+            with sqlite3.connect(root / "test.db") as conn:
+                tail_source = conn.execute(
+                    "SELECT source_key FROM requests WHERE path='/tail'"
+                ).fetchone()[0]
+            self.assertTrue(tail_source.startswith(f"{base}:"))
+
+            result = run(str(config_path))
+
+            self.assertEqual(result.inserted, 0)
+            with sqlite3.connect(root / "test.db") as conn:
+                paths = conn.execute(
+                    "SELECT path, COUNT(*) FROM requests GROUP BY path ORDER BY path"
+                ).fetchall()
+            self.assertEqual(paths, [("/after", 1), ("/before", 1), ("/tail", 1)])
+
+    def test_backfill_recognizes_legacy_rotated_tail_identity(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            base = root / "example.access.log"
+            base.write_text(log_line("/before"))
+            config_path = write_config(root)
+            config = load_config(config_path)
+            ingest_once(config)
+
+            with base.open("a") as handle:
+                handle.write(log_line("/tail"))
+            rotated = Path(str(base) + ".1")
+            base.rename(rotated)
+            base.write_text("")
+            ingest_once(config)
+
+            with sqlite3.connect(root / "test.db") as conn:
+                canonical = conn.execute(
+                    "SELECT source_key FROM requests WHERE path='/tail'"
+                ).fetchone()[0]
+                legacy = str(rotated) + canonical[len(str(base)):]
+                conn.execute(
+                    "UPDATE requests SET source_key=? WHERE path='/tail'",
+                    (legacy,),
+                )
+                conn.commit()
+
+            result = run(str(config_path))
+
+            self.assertEqual(result.inserted, 0)
+            with sqlite3.connect(root / "test.db") as conn:
+                self.assertEqual(
+                    conn.execute("SELECT COUNT(*) FROM requests").fetchone()[0], 2
+                )
+
     def test_live_ingest_then_gzip_rotation_does_not_duplicate(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)

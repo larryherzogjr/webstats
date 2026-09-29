@@ -189,7 +189,7 @@ def _ingest_path(
         if rotated is not None:
             _consume_file(
                 conn, config, configured_site, rotated, saved_inode, saved_offset,
-                site_ids, log_format, geo, stats,
+                site_ids, log_format, geo, stats, identity_path=path,
             )
         saved_offset = 0
     elif current.st_size < saved_offset:
@@ -217,6 +217,7 @@ def _consume_file(
     log_format: CompiledLogFormat,
     geo: GeoLookup,
     stats: IngestStats,
+    identity_path: Optional[Path] = None,
 ) -> int:
     lines, new_offset = _complete_lines(path, offset)
     rows = []
@@ -239,7 +240,9 @@ def _consume_file(
                     row = ParsedRequest(**{**row.__dict__, "country": country})
             rows.append(
                 _record_tuple(
-                    _source_key(path, inode, line_offset, raw), site_ids[selected_site], row
+                    _source_key(identity_path or path, inode, line_offset, raw),
+                    site_ids[selected_site],
+                    row,
                 )
             )
             stats.parsed += 1

@@ -1,8 +1,10 @@
 from dataclasses import replace
+from datetime import datetime, timedelta
 from pathlib import Path
 import tempfile
 import unittest
 from unittest.mock import patch
+from zoneinfo import ZoneInfo
 
 import bcrypt
 
@@ -196,10 +198,44 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(sum(row["requests"] for row in hourly), 2)
         self.assertEqual(hourly[0]["bucket"], "2026-09-28T00:00:00-0500")
 
+    def test_old_hourly_range_falls_back_to_retained_daily_data(self):
+        old_day = (
+            datetime.now(ZoneInfo(self.config.server.timezone)).date()
+            - timedelta(days=self.config.storage.raw_retention_days + 1)
+        ).isoformat()
+        with connect(self.config.storage.db_path) as conn:
+            site_id = site_id_map(conn)["example.com"]
+            conn.execute(
+                """
+                INSERT INTO daily_filter(
+                    site_id, day, include_bots, include_assets, requests,
+                    unique_visitors, bytes, status_2xx, status_3xx,
+                    status_4xx, status_5xx
+                ) VALUES (?, ?, 0, 0, 7, 3, 700, 7, 0, 0, 0)
+                """,
+                (site_id, old_day),
+            )
+            conn.commit()
+
+        self.authenticate()
+        body = self.client.get(
+            f"/api/site/example.com/timeseries?from={old_day}&to={old_day}&interval=hour"
+        ).get_json()
+
+        self.assertEqual(body["interval"], "day")
+        self.assertEqual(body["series"], [{
+            "bucket": old_day,
+            "requests": 7,
+            "unique_visitors": 3,
+            "bytes": 700,
+        }])
+
     def test_referrer_groups_use_host_boundaries_and_limit_after_grouping(self):
         self.assertEqual(_referrer_group("t.co"), "X / Twitter")
         self.assertEqual(_referrer_group("subdomain.x.com"), "X / Twitter")
         self.assertEqual(_referrer_group("www.google.com"), "Google")
+        self.assertEqual(_referrer_group("google.es"), "Google")
+        self.assertEqual(_referrer_group("news.google.com.br"), "Google")
         for host in (
             "reddit.com",
             "microsoft.com",

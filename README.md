@@ -20,8 +20,9 @@ log paths, retention, timezone, and log format all live in TOML configuration.
   country classification.
 - Idempotent daily rollups retained after raw request pruning.
 - Authenticated JSON APIs and responsive server-rendered pages.
-- Zero-filled daily charts, automatic hourly charts for one-day site views, and
-  bookmarkable date and traffic filters.
+- Zero-filled daily charts, automatic hourly charts for retained one-day raw
+  data, daily fallback for older dates, and bookmarkable date and traffic
+  filters.
 - Local Chart.js 4.4.7 bundle with no CDN or front-end build step.
 - Bcrypt login, secure session cookies, login throttling, and public safe health
   status.
