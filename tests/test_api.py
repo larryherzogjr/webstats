@@ -89,6 +89,7 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(self.client.get("/almanac").status_code, 200)
         self.assertEqual(self.client.get("/briefings").status_code, 200)
         self.assertEqual(self.client.get("/changes").status_code, 200)
+        self.assertEqual(self.client.get("/content").status_code, 200)
         self.assertEqual(self.client.get("/pulse").status_code, 200)
         self.assertEqual(self.client.get("/errors").status_code, 200)
         self.assertEqual(self.client.get("/journeys").status_code, 200)
@@ -895,6 +896,116 @@ Disallow: /tmp
         self.assertEqual(agents["GPTBot"]["conflict_requests"], 3)
         self.assertEqual(agents["ClaudeBot"]["policy_source"], "wildcard")
         self.assertEqual(agents["ClaudeBot"]["conflict_requests"], 1)
+
+    def test_content_observatory_combines_sitemaps_coverage_and_policy(self):
+        with connect(self.config.storage.db_path) as conn:
+            site_id = site_id_map(conn)["example.com"]
+            conn.execute(
+                """
+                INSERT INTO daily_page_status(
+                    site_id, day, path, status, requests, human_requests,
+                    nonasset_requests, human_nonasset_requests
+                ) VALUES (?, '2026-09-28', '/outside', 200, 4, 4, 4, 4)
+                """,
+                (site_id,),
+            )
+            conn.executemany(
+                """
+                INSERT INTO daily_page_agent(
+                    site_id, day, path, ua_family, is_bot, requests, asset_requests
+                ) VALUES (?, '2026-09-28', ?, ?, 1, ?, 0)
+                """,
+                (
+                    (site_id, "/one", "Googlebot", 2),
+                    (site_id, "/ai-only", "GPTBot", 3),
+                    (site_id, "/private", "GPTBot", 2),
+                ),
+            )
+            conn.execute("INSERT INTO sites(name) VALUES ('ad-fontes.app')")
+            conn.commit()
+        self.authenticate()
+        robots_text = """User-agent: GPTBot
+Disallow: /private
+
+User-agent: *
+Disallow: /blocked
+"""
+        robots = {
+            "example.com": {
+                "site": "example.com", "url": "https://example.com/robots.txt",
+                "status": "available", "text": robots_text,
+            }
+        }
+        inventory = {
+            "example.com": {
+                "site": "example.com", "status": "available",
+                "declared": ["https://example.com/sitemap.xml"],
+                "documents": ["https://example.com/sitemap.xml"],
+                "pages": [
+                    {"path": "/one", "url": "https://example.com/one", "lastmod": "2026-09-28", "sitemap": "https://example.com/sitemap.xml"},
+                    {"path": "/dark", "url": "https://example.com/dark", "lastmod": None, "sitemap": "https://example.com/sitemap.xml"},
+                    {"path": "/ai-only", "url": "https://example.com/ai-only", "lastmod": None, "sitemap": "https://example.com/sitemap.xml"},
+                    {"path": "/private", "url": "https://example.com/private", "lastmod": None, "sitemap": "https://example.com/sitemap.xml"},
+                ],
+                "errors": [], "limited": False,
+            }
+        }
+        with patch("webstats.api.fetch_robots_policies", return_value=robots), patch(
+            "webstats.api.fetch_sitemap_inventories", return_value=inventory
+        ):
+            response = self.client.get(
+                "/api/content-observatory?from=2026-09-28&to=2026-09-28"
+                "&site=example.com"
+            )
+        self.assertEqual(response.status_code, 200)
+        body = response.get_json()
+        self.assertEqual(body["totals"]["published_pages"], 4)
+        self.assertEqual(body["totals"]["dark_pages"], 3)
+        self.assertEqual(body["totals"]["off_sitemap_pages"], 1)
+        self.assertEqual(body["totals"]["policy_conflicts"], 1)
+        self.assertEqual(body["totals"]["human_coverage_percent"], 25.0)
+        self.assertEqual(body["totals"]["search_coverage_percent"], 25.0)
+        self.assertEqual(body["totals"]["ai_coverage_percent"], 50.0)
+        states = {row["path"]: row["state"] for row in body["dark_matter"]}
+        self.assertEqual(states["/dark"], "unseen")
+        self.assertEqual(states["/ai-only"], "crawler-only")
+        self.assertEqual(body["off_sitemap"][0]["path"], "/outside")
+        self.assertEqual(body["policy_conflicts"][0]["agents"], ["GPTBot"])
+        crawlers = {(row["agent"], row["site"]): row for row in body["crawlers"]}
+        self.assertEqual(crawlers[("Googlebot", "example.com")]["coverage_percent"], 25.0)
+        self.assertEqual(crawlers[("GPTBot", "example.com")]["coverage_percent"], 50.0)
+
+        private_robots = {
+            "ad-fontes.app": {
+                "site": "ad-fontes.app",
+                "url": "https://ad-fontes.app/robots.txt",
+                "status": "not_found", "text": "",
+            }
+        }
+        private_inventory = {
+            "ad-fontes.app": {
+                "site": "ad-fontes.app", "status": "available",
+                "declared": [], "documents": ["https://ad-fontes.app/sitemap.xml"],
+                "pages": [{
+                    "path": "/private-reading", "url": "https://ad-fontes.app/private-reading",
+                    "lastmod": None, "sitemap": "https://ad-fontes.app/sitemap.xml",
+                }],
+                "errors": [], "limited": False,
+            }
+        }
+        with patch(
+            "webstats.api.fetch_robots_policies", return_value=private_robots
+        ), patch(
+            "webstats.api.fetch_sitemap_inventories", return_value=private_inventory
+        ):
+            private = self.client.get(
+                "/api/content-observatory?site=ad-fontes.app"
+            ).get_json()
+        self.assertTrue(private["privacy"]["protected"])
+        self.assertEqual(private["totals"]["published_pages"], 1)
+        self.assertEqual(private["totals"]["analyzed_pages"], 0)
+        self.assertEqual(private["dark_matter"], [])
+        self.assertIn("privacy boundary", private["narrative"])
 
     def test_almanac_records_streaks_milestones_and_calendar(self):
         with connect(self.config.storage.db_path) as conn:

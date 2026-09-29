@@ -1484,6 +1484,67 @@
     } catch (error) { showError(error); }
   }
 
+  function coverage(value) {
+    return value === null || value === undefined ? "—" : `${value}%`;
+  }
+
+  async function loadContentObservatory() {
+    clearError();
+    try {
+      const data = await api(`/api/content-observatory?${query({ limit: "150" })}`);
+      document.querySelector("#range-label").textContent = dateLabel(data.from, data.to);
+      document.querySelector("#content-heading").textContent = data.totals.published_pages
+        ? `${fmt.format(data.totals.published_pages)} published pages under observation`
+        : "No sitemap inventory discovered";
+      document.querySelector("#content-narrative").textContent = data.narrative;
+      document.querySelector("#content-metrics").innerHTML = [
+        metric("Published pages", fmt.format(data.totals.published_pages)),
+        metric("Analyzed pages", fmt.format(data.totals.analyzed_pages)),
+        metric("Dark matter", fmt.format(data.totals.dark_pages)),
+        metric("Outside sitemaps", fmt.format(data.totals.off_sitemap_pages)),
+        metric("Human coverage", coverage(data.totals.human_coverage_percent)),
+        metric("Search coverage", coverage(data.totals.search_coverage_percent)),
+        metric("AI coverage", coverage(data.totals.ai_coverage_percent)),
+        metric("Policy collisions", fmt.format(data.totals.policy_conflicts)),
+      ].join("");
+      const privacy = document.querySelector("#content-privacy");
+      privacy.classList.toggle("hidden", !data.privacy.protected);
+      privacy.textContent = data.privacy.protected
+        ? "The public sitemap inventory can be counted, but page-level attention and crawler coverage for this privacy-protected site are intentionally hidden."
+        : "";
+      document.querySelector("#content-sites").innerHTML = data.sites.map(site => {
+        const status = site.sitemap_status === "available" ? "Sitemap found"
+          : site.sitemap_status === "not_found" ? "No sitemap" : "Sitemap unavailable";
+        const detail = site.protected
+          ? "Activity protected"
+          : `${fmt.format(site.dark_pages)} dark · ${fmt.format(site.off_sitemap_pages)} outside sitemap`;
+        return `<article class="content-site-card ${site.sitemap_status}"><div><span class="content-status">${escapeHtml(status)}</span><strong>${escapeHtml(site.site)}</strong></div><div class="content-site-number">${fmt.format(site.published_pages)}<small>published pages</small></div><div class="coverage-trio"><span>Human <strong>${escapeHtml(coverage(site.human_coverage_percent))}</strong></span><span>Search <strong>${escapeHtml(coverage(site.search_coverage_percent))}</strong></span><span>AI <strong>${escapeHtml(coverage(site.ai_coverage_percent))}</strong></span></div><p>${escapeHtml(detail)} · ${fmt.format(site.sitemap_documents)} sitemap document${site.sitemap_documents === 1 ? "" : "s"}</p></article>`;
+      }).join("");
+      document.querySelector("#dark-matter").innerHTML = data.dark_matter.length
+        ? data.dark_matter.map(item => {
+          const params = new URLSearchParams({ from: data.from, to: data.to, bots: "0", assets: "0", path: item.path });
+          const lastmod = item.lastmod ? ` · sitemap ${item.lastmod.slice(0, 10)}` : "";
+          return `<article class="dark-card"><div class="dark-card-top"><span class="dark-badge ${escapeHtml(item.state)}">${escapeHtml(item.state)}</span><span>${fmt.format(item.human_requests)} human</span></div><a href="/site/${encodeURIComponent(item.site)}/page?${params}">${escapeHtml(item.path)}</a><small>${escapeHtml(item.site)}${escapeHtml(lastmod)}</small><p>${escapeHtml(item.explanation)}</p><div class="dark-card-signals"><span>${fmt.format(item.search_requests)} search</span><span>${fmt.format(item.ai_requests)} AI</span><span>${fmt.format(item.error_requests)} errors</span></div></article>`;
+        }).join("")
+        : '<p class="empty">No content dark matter in this scope and window.</p>';
+      document.querySelector("#content-crawlers").innerHTML = data.crawlers.length
+        ? data.crawlers.map(item => `<tr><td><strong>${escapeHtml(item.agent)}</strong><small>${escapeHtml(item.provider)} · ${escapeHtml(item.purpose)}</small></td><td>${escapeHtml(item.site)}</td><td><span class="crawler-kind ${escapeHtml(item.kind)}">${escapeHtml(item.kind)}</span></td><td>${fmt.format(item.requests)}</td><td>${fmt.format(item.sitemap_pages_seen)}</td><td>${escapeHtml(coverage(item.coverage_percent))}</td><td>${fmt.format(item.off_sitemap_pages)}</td><td class="${item.blocked_sitemap_pages ? "danger-text" : ""}">${fmt.format(item.blocked_sitemap_pages)}</td></tr>`).join("")
+        : '<tr><td colspan="8" class="empty">No recognized search or AI crawler coverage yet.</td></tr>';
+      document.querySelector("#off-sitemap").innerHTML = data.off_sitemap.length
+        ? data.off_sitemap.map(item => {
+          const href = pageStoryHref(item, data.from, data.to);
+          return `<tr><td><a class="table-link" href="${escapeHtml(href)}">${escapeHtml(item.path)}</a></td><td>${escapeHtml(item.site)}</td><td>${fmt.format(item.requests)}</td><td>${escapeHtml(item.last_seen || "—")}</td></tr>`;
+        }).join("")
+        : '<tr><td colspan="4" class="empty">No active human pages sit outside the discovered sitemap inventory.</td></tr>';
+      document.querySelector("#content-conflicts").innerHTML = data.policy_conflicts.length
+        ? data.policy_conflicts.map(item => {
+          const href = pageStoryHref(item, data.from, data.to);
+          return `<tr><td><a class="table-link" href="${escapeHtml(href)}">${escapeHtml(item.path)}</a></td><td>${escapeHtml(item.site)}</td><td>${escapeHtml(item.agents.join(", "))}</td><td class="${item.observed_requests ? "danger-text" : ""}">${fmt.format(item.observed_requests)}</td></tr>`;
+        }).join("")
+        : '<tr><td colspan="4" class="empty">No sitemap pages conflict with current AI or search crawler rules.</td></tr>';
+    } catch (error) { showError(error); }
+  }
+
   function unixTime(value) {
     return value ? escapeHtml(new Date(value * 1000).toLocaleString()) : "Never";
   }
@@ -1540,6 +1601,11 @@
     setupFilters(loadChanges);
     setupSiteFilter(() => { syncUrl(); loadChanges(); });
     loadChanges();
+  }
+  if (page === "content-observatory") {
+    setupFilters(loadContentObservatory);
+    setupSiteFilter(() => { syncUrl(); loadContentObservatory(); });
+    loadContentObservatory();
   }
   if (page === "pulse") {
     setupSiteFilter(() => {

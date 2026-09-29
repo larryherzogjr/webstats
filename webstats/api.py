@@ -21,6 +21,7 @@ from .db import connect
 from .privacy import INDIVIDUAL_ACTIVITY_PRIVATE_SITES
 from .robots import fetch_robots_policies, parse_robots, path_allowed, policy_for
 from .rollup import PROBE_PATH_PREFIXES, PROBE_PATHS
+from .sitemaps import fetch_sitemap_inventories
 
 
 api_bp = Blueprint("api", __name__, url_prefix="/api")
@@ -29,6 +30,12 @@ api_bp = Blueprint("api", __name__, url_prefix="/api")
 # sensitive reading activity. It can contribute anonymous totals, but never
 # individual Live Radar rows or country pulses.
 LIVE_PRIVATE_SITES = INDIVIDUAL_ACTIVITY_PRIVATE_SITES
+SEARCH_CRAWLERS = {
+    "Googlebot": ("Google", "Search indexing"),
+    "Bingbot": ("Microsoft", "Search indexing"),
+    "DuckDuckBot": ("DuckDuckGo", "Search indexing"),
+    "Applebot": ("Apple", "Search and assistant indexing"),
+}
 
 
 def _conn() -> sqlite3.Connection:
@@ -904,6 +911,344 @@ def ai_policy():
         "narrative": narrative,
         "sites": site_rows,
         "agents": agent_rows,
+    })
+
+
+def _coverage_percent(seen: int, total: int) -> Optional[float]:
+    return round(100 * seen / total, 1) if total else None
+
+
+def _content_state(page: dict[str, Any]) -> tuple[str, str]:
+    humans = page["human_requests"]
+    lifetime_humans = page["lifetime_human_requests"]
+    crawlers = page["search_requests"] + page["ai_requests"]
+    lifetime_crawlers = (
+        page["lifetime_search_requests"] + page["lifetime_ai_requests"]
+    )
+    if lifetime_humans == 0 and lifetime_crawlers == 0:
+        return "unseen", "Published, but never observed in the retained rollups."
+    if lifetime_humans == 0:
+        return "crawler-only", "Crawlers found it, but no successful human visit has been observed."
+    if humans == 0:
+        return "quiet", "Previously read, but quiet throughout the selected window."
+    if crawlers >= max(5, humans * 3):
+        return "crawler-heavy", "Crawler requests outnumber human visits by at least three to one."
+    return "active", "Receiving human attention in the selected window."
+
+
+@api_bp.get("/content-observatory")
+@login_required
+def content_observatory():
+    start, end = _date_range()
+    limit = _int_arg("limit", 100, 10, 500)
+    with _conn() as conn:
+        selected_site = _requested_site(conn)
+        site_rows = list(conn.execute(
+            "SELECT id, name FROM sites "
+            + ("WHERE id=? " if selected_site else "")
+            + "ORDER BY name",
+            ((selected_site["id"],) if selected_site else ()),
+        ))
+    site_names = [row["name"] for row in site_rows]
+    robots = fetch_robots_policies(site_names)
+    inventories = fetch_sitemap_inventories(site_names, robots)
+    visible_sites = [
+        name for name in site_names
+        if name not in INDIVIDUAL_ACTIVITY_PRIVATE_SITES
+    ]
+    human_rows = []
+    error_rows = []
+    crawler_rows = []
+    if visible_sites:
+        site_placeholders = ",".join("?" for _ in visible_sites)
+        crawler_families = tuple({**SEARCH_CRAWLERS, **AI_AGENTS})
+        crawler_placeholders = ",".join("?" for _ in crawler_families)
+        with _conn() as conn:
+            human_rows = list(conn.execute(
+                f"""
+                SELECT s.name site, x.path,
+                  SUM(CASE WHEN x.day BETWEEN ? AND ?
+                    THEN x.human_nonasset_requests ELSE 0 END) human_requests,
+                  SUM(x.human_nonasset_requests) lifetime_human_requests,
+                  MIN(CASE WHEN x.human_nonasset_requests>0 THEN x.day END) first_seen,
+                  MAX(CASE WHEN x.human_nonasset_requests>0 THEN x.day END) last_seen
+                FROM daily_page_status x JOIN sites s ON s.id=x.site_id
+                WHERE x.status BETWEEN 200 AND 399
+                  AND s.name IN ({site_placeholders})
+                GROUP BY x.site_id, x.path
+                HAVING SUM(x.human_nonasset_requests)>0
+                """,
+                (start, end, *visible_sites),
+            ))
+            error_rows = list(conn.execute(
+                f"""
+                SELECT s.name site, x.path,
+                       SUM(x.human_nonasset_requests) error_requests
+                FROM daily_page_status x JOIN sites s ON s.id=x.site_id
+                WHERE x.day BETWEEN ? AND ? AND x.status>=400
+                  AND s.name IN ({site_placeholders})
+                GROUP BY x.site_id, x.path
+                HAVING SUM(x.human_nonasset_requests)>0
+                """,
+                (start, end, *visible_sites),
+            ))
+            crawler_rows = list(conn.execute(
+                f"""
+                SELECT s.name site, x.path, x.ua_family agent,
+                  SUM(CASE WHEN x.day BETWEEN ? AND ?
+                    THEN x.requests-x.asset_requests ELSE 0 END) requests,
+                  SUM(x.requests-x.asset_requests) lifetime_requests
+                FROM daily_page_agent x JOIN sites s ON s.id=x.site_id
+                WHERE x.is_bot=1 AND x.ua_family IN ({crawler_placeholders})
+                  AND s.name IN ({site_placeholders})
+                GROUP BY x.site_id, x.path, x.ua_family
+                HAVING SUM(x.requests-x.asset_requests)>0
+                """,
+                (start, end, *crawler_families, *visible_sites),
+            ))
+
+    humans = {}
+    for row in human_rows:
+        if _is_probe_path(row["path"]):
+            continue
+        item = dict(row)
+        item["human_requests"] = item["human_requests"] or 0
+        item["lifetime_human_requests"] = item["lifetime_human_requests"] or 0
+        humans[(row["site"], row["path"])] = item
+    errors = {
+        (row["site"], row["path"]): row["error_requests"]
+        for row in error_rows if not _is_probe_path(row["path"])
+    }
+    crawlers = {
+        (row["site"], row["path"], row["agent"]): dict(row)
+        for row in crawler_rows if not _is_probe_path(row["path"])
+    }
+    agents = {**SEARCH_CRAWLERS, **AI_AGENTS}
+    pages = []
+    conflicts = []
+    off_sitemap = []
+    crawler_coverage = []
+    summaries = []
+
+    for site_name in site_names:
+        protected = site_name in INDIVIDUAL_ACTIVITY_PRIVATE_SITES
+        inventory = inventories[site_name]
+        sitemap_paths = {item["path"] for item in inventory["pages"]}
+        robots_status = robots[site_name]["status"]
+        groups = parse_robots(robots[site_name].get("text", ""))
+        site_pages = []
+        if not protected:
+            for item in inventory["pages"]:
+                path = item["path"]
+                human = humans.get((site_name, path), {})
+                search_current = search_lifetime = 0
+                ai_current = ai_lifetime = 0
+                blocked_agents = []
+                conflict_requests = 0
+                for agent in agents:
+                    observed = crawlers.get((site_name, path, agent), {})
+                    current_requests = observed.get("requests", 0) or 0
+                    lifetime_requests = observed.get("lifetime_requests", 0) or 0
+                    if agent in SEARCH_CRAWLERS:
+                        search_current += current_requests
+                        search_lifetime += lifetime_requests
+                    else:
+                        ai_current += current_requests
+                        ai_lifetime += lifetime_requests
+                    if robots_status == "available":
+                        _, rules = policy_for(groups, agent)
+                        if not path_allowed(rules, path):
+                            blocked_agents.append(agent)
+                            conflict_requests += current_requests
+                page = {
+                    **item,
+                    "site": site_name,
+                    "human_requests": human.get("human_requests", 0) or 0,
+                    "lifetime_human_requests": human.get(
+                        "lifetime_human_requests", 0
+                    ) or 0,
+                    "first_seen": human.get("first_seen"),
+                    "last_seen": human.get("last_seen"),
+                    "search_requests": search_current,
+                    "lifetime_search_requests": search_lifetime,
+                    "ai_requests": ai_current,
+                    "lifetime_ai_requests": ai_lifetime,
+                    "error_requests": errors.get((site_name, path), 0),
+                    "blocked_agents": blocked_agents,
+                    "conflict_requests": conflict_requests,
+                }
+                page["state"], page["explanation"] = _content_state(page)
+                site_pages.append(page)
+                pages.append(page)
+                if blocked_agents:
+                    conflicts.append({
+                        "site": site_name, "path": path,
+                        "agents": blocked_agents,
+                        "observed_requests": conflict_requests,
+                    })
+
+            active_paths = [
+                row for (name, path), row in humans.items()
+                if name == site_name and row["human_requests"] > 0
+                and path not in sitemap_paths
+            ]
+            for row in active_paths:
+                off_sitemap.append({
+                    "site": site_name,
+                    "path": row["path"],
+                    "requests": row["human_requests"],
+                    "lifetime_requests": row["lifetime_human_requests"],
+                    "first_seen": row["first_seen"],
+                    "last_seen": row["last_seen"],
+                })
+
+            for agent, (provider, purpose) in agents.items():
+                agent_rows = [
+                    row for (name, _path, family), row in crawlers.items()
+                    if name == site_name and family == agent
+                ]
+                lifetime_paths = {
+                    row["path"] for row in agent_rows if row["lifetime_requests"]
+                }
+                current_paths = {
+                    row["path"] for row in agent_rows if row["requests"]
+                }
+                blocked_paths = {
+                    row["path"] for row in site_pages if agent in row["blocked_agents"]
+                }
+                if not agent_rows and not blocked_paths:
+                    continue
+                crawler_coverage.append({
+                    "site": site_name,
+                    "agent": agent,
+                    "provider": provider,
+                    "purpose": purpose,
+                    "kind": "search" if agent in SEARCH_CRAWLERS else "ai",
+                    "requests": sum(row["requests"] or 0 for row in agent_rows),
+                    "lifetime_requests": sum(
+                        row["lifetime_requests"] or 0 for row in agent_rows
+                    ),
+                    "sitemap_pages_seen": len(lifetime_paths & sitemap_paths),
+                    "current_sitemap_pages": len(current_paths & sitemap_paths),
+                    "off_sitemap_pages": len(current_paths - sitemap_paths),
+                    "blocked_sitemap_pages": len(blocked_paths),
+                    "coverage_percent": _coverage_percent(
+                        len(lifetime_paths & sitemap_paths), len(sitemap_paths)
+                    ),
+                })
+
+        human_seen = sum(page["lifetime_human_requests"] > 0 for page in site_pages)
+        search_seen = sum(page["lifetime_search_requests"] > 0 for page in site_pages)
+        ai_seen = sum(page["lifetime_ai_requests"] > 0 for page in site_pages)
+        summaries.append({
+            "site": site_name,
+            "sitemap_status": inventory["status"],
+            "robots_status": robots_status,
+            "published_pages": len(inventory["pages"]),
+            "sitemap_documents": len(inventory["documents"]),
+            "declared_sitemaps": len(inventory["declared"]),
+            "discovery_errors": len(inventory["errors"]),
+            "limited": inventory["limited"],
+            "protected": protected,
+            "human_pages_seen": human_seen if not protected else None,
+            "human_coverage_percent": (
+                _coverage_percent(human_seen, len(site_pages)) if not protected else None
+            ),
+            "search_coverage_percent": (
+                _coverage_percent(search_seen, len(site_pages)) if not protected else None
+            ),
+            "ai_coverage_percent": (
+                _coverage_percent(ai_seen, len(site_pages)) if not protected else None
+            ),
+            "dark_pages": sum(
+                page["state"] in {"unseen", "crawler-only", "quiet", "crawler-heavy"}
+                for page in site_pages
+            ),
+            "off_sitemap_pages": sum(
+                row["site"] == site_name for row in off_sitemap
+            ),
+            "policy_conflicts": sum(
+                row["site"] == site_name for row in conflicts
+            ),
+        })
+
+    dark_priority = {
+        "unseen": 0, "crawler-only": 1, "crawler-heavy": 2, "quiet": 3,
+        "active": 4,
+    }
+    dark_matter = [page for page in pages if page["state"] != "active"]
+    dark_matter.sort(key=lambda row: (
+        dark_priority[row["state"]],
+        -(row["search_requests"] + row["ai_requests"]),
+        row["site"], row["path"],
+    ))
+    off_sitemap.sort(key=lambda row: (-row["requests"], row["site"], row["path"]))
+    conflicts.sort(key=lambda row: (
+        -row["observed_requests"], row["site"], row["path"]
+    ))
+    crawler_coverage.sort(key=lambda row: (
+        0 if row["kind"] == "search" else 1,
+        -row["requests"], row["site"], row["agent"],
+    ))
+    analyzed_pages = len(pages)
+    human_seen = sum(page["lifetime_human_requests"] > 0 for page in pages)
+    search_seen = sum(page["lifetime_search_requests"] > 0 for page in pages)
+    ai_seen = sum(page["lifetime_ai_requests"] > 0 for page in pages)
+    published_pages = sum(row["published_pages"] for row in summaries)
+    if not published_pages:
+        narrative = (
+            "No sitemap inventory was discovered. Active successful pages are shown "
+            "as inventory drift so you can see what a future sitemap should cover."
+        )
+    elif not analyzed_pages:
+        narrative = (
+            f"Webstats discovered {published_pages:,} published pages, but page-level "
+            "attention and crawler comparisons are hidden by this site's privacy boundary."
+        )
+    elif dark_matter:
+        narrative = (
+            f"Webstats discovered {published_pages:,} published pages and found "
+            f"{len(dark_matter):,} with weak or absent human attention. "
+            f"{len(off_sitemap):,} active pages sit outside the current sitemap inventory."
+        )
+    else:
+        narrative = (
+            f"All {analyzed_pages:,} analyzable sitemap pages have current human "
+            "attention; no content dark matter was detected in this window."
+        )
+    return jsonify({
+        "from": start,
+        "to": end,
+        "generated_at": int(datetime.now(timezone.utc).timestamp()),
+        "scope": {"site": selected_site["name"] if selected_site else None},
+        "privacy": {
+            "protected": bool(
+                selected_site
+                and selected_site["name"] in INDIVIDUAL_ACTIVITY_PRIVATE_SITES
+            ),
+            "excluded_sites": list(INDIVIDUAL_ACTIVITY_PRIVATE_SITES),
+        },
+        "narrative": narrative,
+        "totals": {
+            "published_pages": published_pages,
+            "analyzed_pages": analyzed_pages,
+            "dark_pages": len(dark_matter),
+            "off_sitemap_pages": len(off_sitemap),
+            "policy_conflicts": len(conflicts),
+            "human_coverage_percent": _coverage_percent(human_seen, analyzed_pages),
+            "search_coverage_percent": _coverage_percent(search_seen, analyzed_pages),
+            "ai_coverage_percent": _coverage_percent(ai_seen, analyzed_pages),
+        },
+        "sites": summaries,
+        "dark_matter": dark_matter[:limit],
+        "off_sitemap": off_sitemap[:limit],
+        "policy_conflicts": conflicts[:limit],
+        "crawlers": crawler_coverage,
+        "limited": {
+            "dark_matter": len(dark_matter) > limit,
+            "off_sitemap": len(off_sitemap) > limit,
+            "policy_conflicts": len(conflicts) > limit,
+        },
     })
 
 

@@ -113,6 +113,15 @@ def changes():
     )
 
 
+@views_bp.get("/content")
+@login_required
+def content_observatory():
+    return render_template(
+        "content.html", server_today=_server_today(), force_bots=True,
+        hide_assets=True, site_filter=True,
+    )
+
+
 @views_bp.get("/pulse")
 @login_required
 def pulse():

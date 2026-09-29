@@ -41,6 +41,10 @@ log paths, retention, timezone, and log format all live in TOML configuration.
   preceding equal-length window and attributes movement to pages, referrers,
   countries, bots, AI crawlers, feed readers, and errors, with direct links to
   the relevant drill-downs.
+- A Content Observatory that discovers same-site HTTPS sitemaps automatically,
+  identifies never-observed, crawler-only, quiet, and crawler-heavy pages,
+  measures search and AI coverage, finds active pages outside the published
+  inventory, and surfaces current robots/sitemap policy collisions.
 - Content Pulse classifications for debuts, rising and cooling pages,
   evergreen content, dormant pages, and content resurfacing after a long quiet
   spell, with the referrer, country, and AI activity behind each signal.
@@ -68,8 +72,8 @@ log paths, retention, timezone, and log format all live in TOML configuration.
 - Idempotent daily rollups retained after raw request pruning.
 - Authenticated JSON APIs and responsive server-rendered pages.
 - Bookmarkable all-site or single-site scopes across Live Radar, Weekly
-  Briefings, AI Crawlers, Feeds, Reading Paths, Link Atlas, and the Traffic
-  Almanac.
+  Briefings, the Change Engine, Content Observatory, AI Crawlers, Feeds,
+  Reading Paths, Link Atlas, and the Traffic Almanac.
 - Zero-filled daily charts, automatic hourly charts for retained one-day raw
   data, daily fallback for older dates, and bookmarkable date and traffic
   filters.
@@ -111,6 +115,16 @@ The AI Policy Observatory keeps no policy archive. It caches current public
 current rules with the selected historical traffic window. Its conflict label
 therefore means “this observed path is disallowed now,” not necessarily that
 the same rule existed when the request occurred.
+
+The Content Observatory follows sitemap declarations in `robots.txt` and falls
+back to the conventional `/sitemap.xml`, `/sitemap_index.xml`, and
+`/sitemap-index.xml` locations. Discovery accepts only same-site HTTPS URLs,
+follows only same-site HTTPS redirects, ignores static-asset entries, and is
+capped at eight seconds, 24 sitemap documents, and 10,000 page URLs per site.
+Current sitemap
+inventories are held in application memory for 30 minutes; no fetched document
+or new visitor identifier is written to the database. Page-level comparisons
+remain disabled for privacy-protected sites.
 
 ## Fresh installation in 14 steps
 

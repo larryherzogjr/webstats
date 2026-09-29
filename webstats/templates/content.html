@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+{% block title %}Content Observatory | Webstats{% endblock %}
+{% block page_id %}content-observatory{% endblock %}
+{% block content %}
+<div class="page-heading">
+  <div><p class="eyebrow">Published inventory meets observed attention</p><h1>Content Observatory</h1></div>
+  <p id="range-label" class="range-label"></p>
+</div>
+{% include "_filters.html" %}
+<div id="page-error" class="alert hidden" role="alert"></div>
+<div id="content-privacy" class="alert hidden" role="status"></div>
+<section class="panel content-hero">
+  <div class="panel-heading">
+    <div><p class="eyebrow">Automatic inventory audit</p><h2 id="content-heading">Discovering your published web</h2></div>
+    <span class="legend-note">Current sitemaps · permanent rollups</span>
+  </div>
+  <p id="content-narrative" class="pulse-summary"></p>
+</section>
+<section id="content-metrics" class="metric-grid" aria-label="Content inventory summary"></section>
+<section class="panel">
+  <div class="panel-heading">
+    <div><p class="eyebrow">Site posture</p><h2>Sitemap and coverage health</h2></div>
+    <span class="legend-note">Discovered automatically from robots.txt or /sitemap.xml</span>
+  </div>
+  <div id="content-sites" class="content-site-grid"></div>
+</section>
+<section class="panel dark-matter-panel">
+  <div class="panel-heading">
+    <div><p class="eyebrow">Content Dark Matter</p><h2>Published pages outside ordinary attention</h2></div>
+    <span class="legend-note">Unseen, crawler-only, quiet, or crawler-heavy</span>
+  </div>
+  <div id="dark-matter" class="dark-matter-grid" aria-live="polite"></div>
+</section>
+<section class="panel">
+  <div class="panel-heading">
+    <div><p class="eyebrow">Crawler Observatory</p><h2>Search and AI coverage</h2></div>
+    <span class="legend-note">Lifetime inventory coverage · selected-window requests</span>
+  </div>
+  <div class="table-wrap"><table><thead><tr><th>Agent</th><th>Site</th><th>Kind</th><th>Requests</th><th>Sitemap seen</th><th>Coverage</th><th>Outside sitemap</th><th>Blocked</th></tr></thead><tbody id="content-crawlers"></tbody></table></div>
+</section>
+<div class="content-drift-grid">
+  <section class="panel">
+    <div class="panel-heading"><div><p class="eyebrow">Inventory drift</p><h2>Active pages outside sitemaps</h2></div></div>
+    <div class="table-wrap"><table><thead><tr><th>Page</th><th>Site</th><th>Human visits</th><th>Last seen</th></tr></thead><tbody id="off-sitemap"></tbody></table></div>
+  </section>
+  <section class="panel">
+    <div class="panel-heading"><div><p class="eyebrow">Policy collisions</p><h2>Published but blocked</h2></div></div>
+    <div class="table-wrap"><table><thead><tr><th>Page</th><th>Site</th><th>Blocked agents</th><th>Observed conflicts</th></tr></thead><tbody id="content-conflicts"></tbody></table></div>
+  </section>
+</div>
+<p class="muted methodology-note">The Observatory reads current same-site HTTPS sitemaps, capped at 24 documents and 10,000 URLs per site. “Unseen” means no successful human or recognized crawler request exists in permanent daily rollups; it does not prove that nobody ever loaded the page. Current robots.txt rules are compared with the published inventory, so policy collisions are present-day signals rather than a historical compliance verdict.</p>
+{% endblock %}

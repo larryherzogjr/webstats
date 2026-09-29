@@ -37,7 +37,10 @@ class _SameSiteRedirect(HTTPRedirectHandler):
         after = urlsplit(newurl)
         before_host = (before.hostname or "").removeprefix("www.")
         after_host = (after.hostname or "").removeprefix("www.")
-        if after.scheme != "https" or before_host != after_host:
+        if (
+            after.scheme != "https" or before_host != after_host
+            or after.port not in {None, 443}
+        ):
             return None
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
