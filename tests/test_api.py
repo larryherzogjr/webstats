@@ -91,6 +91,7 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(self.client.get("/pulse").status_code, 200)
         self.assertEqual(self.client.get("/errors").status_code, 200)
         self.assertEqual(self.client.get("/journeys").status_code, 200)
+        self.assertEqual(self.client.get("/links").status_code, 200)
         self.assertEqual(self.client.get("/feed-readers").status_code, 200)
         self.assertEqual(self.client.get("/ai-crawlers").status_code, 200)
         self.assertEqual(self.client.get("/live").status_code, 200)
@@ -442,7 +443,12 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(page["totals"]["last_seen"], "2026-09-28")
         self.assertEqual(
             page["referrers"],
-            [{"group": "news.ycombinator.com", "requests": 1}],
+            [{
+                "group": "news.ycombinator.com",
+                "requests": 1,
+                "first_seen": "2026-09-28",
+                "last_seen": "2026-09-28",
+            }],
         )
         self.assertEqual(page["statuses"], [{"status": 200, "requests": 1}])
         self.assertEqual(page["ai_agents"][0]["agent"], "GPTBot")
@@ -463,6 +469,110 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(
             self.client.get("/api/site/example.com/page?path=%2Funknown").status_code,
             404,
+        )
+
+    def test_link_atlas_classifies_sources_and_maps_destinations(self):
+        with connect(self.config.storage.db_path) as conn:
+            site_id = site_id_map(conn)["example.com"]
+            referrers = (
+                ("2026-09-28", "debut.example", 4),
+                ("2026-09-20", "rise.example", 1),
+                ("2026-09-28", "rise.example", 3),
+                ("2026-08-01", "return.example", 2),
+                ("2026-09-28", "return.example", 2),
+                ("2026-09-20", "quiet.example", 5),
+                ("2026-08-10", "loyal.example", 1),
+                ("2026-08-20", "loyal.example", 1),
+                ("2026-09-01", "loyal.example", 1),
+                ("2026-09-10", "loyal.example", 1),
+                ("2026-09-28", "loyal.example", 1),
+            )
+            conn.executemany(
+                """
+                INSERT INTO daily_referrer(
+                    site_id, day, referrer_host, requests, human_requests,
+                    nonasset_requests, human_nonasset_requests
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    (site_id, day, source, count, count, count, count)
+                    for day, source, count in referrers
+                ],
+            )
+            conn.executemany(
+                """
+                INSERT INTO daily_page_referrer(
+                    site_id, day, path, referrer_host, requests,
+                    human_requests, nonasset_requests, human_nonasset_requests
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    (site_id, "2026-09-28", "/launch", "debut.example", 4, 4, 4, 4),
+                    (site_id, "2026-09-28", "/essay", "rise.example", 3, 3, 3, 3),
+                    (site_id, "2026-09-28", "/archive", "return.example", 2, 2, 2, 2),
+                    (site_id, "2026-09-28", "/home", "loyal.example", 1, 1, 1, 1),
+                ),
+            )
+            conn.execute("INSERT INTO sites(name) VALUES ('ad-fontes.app')")
+            conn.commit()
+        self.authenticate()
+
+        response = self.client.get(
+            "/api/link-atlas?from=2026-09-22&to=2026-09-28"
+        )
+        self.assertEqual(response.status_code, 200)
+        body = response.get_json()
+        categories = {
+            row["source"]: row["category"] for row in body["sources"]
+        }
+        self.assertEqual(categories["debut.example"], "debut")
+        self.assertEqual(categories["rise.example"], "rising")
+        self.assertEqual(categories["return.example"], "resurfaced")
+        self.assertEqual(categories["loyal.example"], "loyal")
+        self.assertEqual(categories["quiet.example"], "dormant")
+        self.assertEqual(
+            body["totals"],
+            {
+                "requests": 10,
+                "active_sources": 4,
+                "new_sources": 1,
+                "linked_pages": 4,
+                "sites": 1,
+            },
+        )
+        self.assertEqual(body["series"][-1], {
+            "bucket": "2026-09-28", "requests": 10,
+        })
+        launch = next(
+            row for row in body["relationships"] if row["path"] == "/launch"
+        )
+        self.assertEqual(launch["source"], "debut.example")
+        self.assertEqual(launch["requests"], 4)
+
+        filtered = self.client.get(
+            "/api/link-atlas?from=2026-09-22&to=2026-09-28"
+            "&site=example.com&source=rise.example"
+        ).get_json()
+        self.assertEqual(filtered["scope"], {
+            "site": "example.com", "source": "rise.example",
+        })
+        self.assertEqual(filtered["totals"]["requests"], 3)
+        self.assertEqual(
+            {row["source"] for row in filtered["relationships"]},
+            {"rise.example"},
+        )
+        private = self.client.get(
+            "/api/link-atlas?site=ad-fontes.app"
+        ).get_json()
+        self.assertTrue(private["privacy"]["protected"])
+        self.assertEqual(private["sources"], [])
+        self.assertEqual(
+            self.client.get("/api/link-atlas?source=missing.example").status_code,
+            404,
+        )
+        self.assertEqual(
+            self.client.get("/api/link-atlas?source=https://bad.example").status_code,
+            400,
         )
 
     def test_feed_reader_observations_and_reported_counts(self):

@@ -12,6 +12,7 @@
   let almanacState = almanacStateFromUrl();
   let briefingWeek = new URLSearchParams(window.location.search).get("week") || "";
   let scopeSite = initialState.site;
+  let linkSource = initialState.source;
   let errorsDays = [7, 30, 90].includes(Number(new URLSearchParams(window.location.search).get("days")))
     ? Number(new URLSearchParams(window.location.search).get("days")) : 30;
 
@@ -45,6 +46,7 @@
       bots: params.get("bots") === "1",
       assets: params.get("assets") === "1",
       site: params.get("site") || "",
+      source: params.get("source") || "",
     };
   }
 
@@ -68,7 +70,9 @@
   }
 
   function persistentParams() {
-    return page === "page" ? { path: document.body.dataset.path } : {};
+    if (page === "page") return { path: document.body.dataset.path };
+    if (page === "link-atlas" && linkSource) return { source: linkSource };
+    return {};
   }
 
   function query(extra = {}) {
@@ -138,6 +142,7 @@
     function renderState(state) {
       range = state.range;
       scopeSite = state.site;
+      if (page === "link-atlas") linkSource = state.source;
       from.value = range.from;
       to.value = range.to;
       if (bots) bots.checked = state.bots;
@@ -658,6 +663,8 @@
       });
       fillTable("#page-referrers", data.referrers, [
         { key: "group" },
+        { key: "first_seen" },
+        { key: "last_seen" },
         { key: "requests", format: fmt.format },
       ], "No referrers to this page in this range.");
       fillTable("#page-ai-agents", data.ai_agents, [
@@ -742,6 +749,73 @@
         { key: "site" },
         { key: "visits", format: fmt.format },
       ], "No inferred exits in this range.");
+    } catch (error) { showError(error); }
+  }
+
+  function linkBadge(category) {
+    return `<span class="link-badge ${escapeHtml(category)}">${escapeHtml(category.replace("-", " "))}</span>`;
+  }
+
+  function linkAtlasHref(source) {
+    const parameters = new URLSearchParams({
+      ...range, bots: "0", assets: "0", source,
+    });
+    if (scopeSite) parameters.set("site", scopeSite);
+    return `/links?${parameters}`;
+  }
+
+  async function loadLinkAtlas() {
+    clearError();
+    try {
+      const data = await api(`/api/link-atlas?${query({ limit: 100 })}`);
+      document.querySelector("#range-label").textContent = dateLabel(data.from, data.to);
+      const privacy = document.querySelector("#link-privacy");
+      privacy.classList.toggle("hidden", !data.privacy.protected);
+      privacy.textContent = data.privacy.protected
+        ? `${data.scope.site} does not collect referrers, so Link Atlas has no source or destination relationships for this site.`
+        : "";
+
+      const sourceSelect = document.querySelector("#link-source");
+      sourceSelect.innerHTML = ["", ...data.available_sources]
+        .map(source => `<option value="${escapeHtml(source)}"${source === linkSource ? " selected" : ""}>${escapeHtml(source || "All sources")}</option>`)
+        .join("");
+
+      document.querySelector("#link-metrics").innerHTML = [
+        metric("Referred visits", fmt.format(data.totals.requests)),
+        metric("Active sources", fmt.format(data.totals.active_sources)),
+        metric("New source/site pairs", fmt.format(data.totals.new_sources)),
+        metric("Linked pages", fmt.format(data.totals.linked_pages)),
+        metric("Sites reached", fmt.format(data.totals.sites)),
+      ].join("");
+      document.querySelector("#link-chart-heading").textContent = linkSource
+        ? `Visits from ${linkSource}` : "Visits from elsewhere";
+      updateChart("link-atlas", document.querySelector("#link-chart"), {
+        type: "line",
+        data: {
+          labels: data.series.map(row => row.bucket),
+          datasets: [{
+            label: linkSource || "Referred visits",
+            data: data.series.map(row => row.requests),
+            borderColor: colors[0], backgroundColor: `${colors[0]}22`,
+            tension: .3, fill: true,
+          }],
+        },
+        options: chartOptions,
+      });
+
+      const sources = document.querySelector("#link-sources");
+      sources.innerHTML = data.sources.length ? data.sources.map(item => {
+        const href = linkAtlasHref(item.source);
+        const changeClass = item.change > 0 ? "change-up" : item.change < 0 ? "change-down" : "";
+        return `<article class="link-source-card"><div class="link-source-top">${linkBadge(item.category)}<span class="${changeClass}">${escapeHtml(signed(item.change))}</span></div><a href="${escapeHtml(href)}">${escapeHtml(item.source)}</a><small>${escapeHtml(item.site)}</small><p>${escapeHtml(item.explanation)}</p><div class="link-source-numbers"><strong>${fmt.format(item.requests)}</strong><span>visits · previous ${fmt.format(item.prior_requests)}</span></div><div class="link-source-dates"><span>First ${escapeHtml(item.first_seen)}</span><span>Last ${escapeHtml(item.last_seen)}</span><span>${fmt.format(item.active_days)} active days</span></div></article>`;
+      }).join("") : '<p class="empty">No referring sources were active in this or the preceding period.</p>';
+
+      const map = document.querySelector("#link-relationships");
+      map.innerHTML = data.relationships.length ? data.relationships.map(item => {
+        const sourceHref = linkAtlasHref(item.source);
+        const pageHref = pageStoryHref(item, data.from, data.to);
+        return `<article class="link-relationship"><a class="link-node source" href="${escapeHtml(sourceHref)}">${escapeHtml(item.source)}</a><span class="journey-arrow" aria-label="links to">→</span><a class="link-node destination" href="${escapeHtml(pageHref)}">${escapeHtml(item.path)}</a><strong>${fmt.format(item.requests)}</strong><small>${escapeHtml(item.site)} · ${escapeHtml(item.first_seen)} to ${escapeHtml(item.last_seen)}</small></article>`;
+      }).join("") : '<p class="empty">No source-to-page relationships in this range.</p>';
     } catch (error) { showError(error); }
   }
 
@@ -1131,6 +1205,27 @@
     setupFilters(loadJourneys);
     setupSiteFilter(() => { syncUrl(); loadJourneys(); });
     loadJourneys();
+  }
+  if (page === "link-atlas") {
+    setupFilters(loadLinkAtlas);
+    setupSiteFilter(() => {
+      linkSource = "";
+      syncUrl();
+      loadLinkAtlas();
+    });
+    document.querySelector("#link-source")?.addEventListener("change", event => {
+      linkSource = event.target.value;
+      syncUrl();
+      loadLinkAtlas();
+    });
+    document.querySelector("#clear-link-source")?.addEventListener("click", () => {
+      linkSource = "";
+      const select = document.querySelector("#link-source");
+      if (select) select.value = "";
+      syncUrl();
+      loadLinkAtlas();
+    });
+    loadLinkAtlas();
   }
   if (page === "health") loadHealth();
 })();

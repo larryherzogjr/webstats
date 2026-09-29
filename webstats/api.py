@@ -1866,20 +1866,32 @@ def page_detail(name: str):
 
         referrer_rows = conn.execute(
             f"""
-            SELECT referrer_host, SUM({metric}) requests
+            SELECT referrer_host,
+                   SUM(CASE WHEN day BETWEEN ? AND ? THEN {metric} ELSE 0 END) requests,
+                   MIN(CASE WHEN {metric}>0 THEN day END) first_seen,
+                   MAX(CASE WHEN {metric}>0 THEN day END) last_seen
             FROM daily_page_referrer
-            WHERE site_id=? AND path=? AND day BETWEEN ? AND ?
-            GROUP BY referrer_host HAVING SUM({metric})>0
+            WHERE site_id=? AND path=?
+            GROUP BY referrer_host
+            HAVING SUM(CASE WHEN day BETWEEN ? AND ? THEN {metric} ELSE 0 END)>0
             """,
-            (site["id"], path, start, end),
+            (start, end, site["id"], path, start, end),
         )
-        grouped_referrers: dict[str, int] = defaultdict(int)
+        grouped_referrers: dict[str, dict[str, Any]] = {}
         for row in referrer_rows:
-            grouped_referrers[_referrer_group(row["referrer_host"])] += row["requests"]
+            group = _referrer_group(row["referrer_host"])
+            stored = grouped_referrers.setdefault(group, {
+                "group": group, "requests": 0,
+                "first_seen": row["first_seen"], "last_seen": row["last_seen"],
+            })
+            stored["requests"] += row["requests"]
+            stored["first_seen"] = min(stored["first_seen"], row["first_seen"])
+            stored["last_seen"] = max(stored["last_seen"], row["last_seen"])
         referrers = [
-            {"group": group, "requests": count}
-            for group, count in sorted(
-                grouped_referrers.items(), key=lambda item: (-item[1], item[0])
+            details
+            for _, details in sorted(
+                grouped_referrers.items(),
+                key=lambda item: (-item[1]["requests"], item[0]),
             )
         ][:25]
 
@@ -2058,6 +2070,227 @@ def _referrer_group(host: str) -> str:
         if any(value == domain or value.endswith(f".{domain}") for domain in domains):
             return label
     return host
+
+
+def _source_arg() -> str:
+    value = request.args.get("source", "").strip().lower().rstrip(".")
+    if not value:
+        return ""
+    if (
+        len(value) > 253
+        or re.search(r"\s", value)
+        or any(character in value for character in "/?#@")
+    ):
+        raise ApiError("source must be a referring host")
+    return value
+
+
+def _link_source_category(row: dict[str, Any], start: date) -> tuple[str, str]:
+    current = row["requests"]
+    previous = row["prior_requests"]
+    first_seen = date.fromisoformat(row["first_seen"])
+    previous_seen = (
+        date.fromisoformat(row["previous_seen"]) if row["previous_seen"] else None
+    )
+    first_current = (
+        date.fromisoformat(row["first_current"]) if row["first_current"] else None
+    )
+    if current and first_seen >= start:
+        return "debut", "First appeared in this date range"
+    if (
+        current and previous_seen and first_current
+        and (first_current - previous_seen).days >= 30
+    ):
+        return "resurfaced", f"Returned after {(first_current - previous_seen).days} quiet days"
+    if current >= 3 and current >= max(previous * 2, previous + 2):
+        return "rising", "At least twice the preceding period"
+    if current and row["active_days"] >= 5:
+        return "loyal", f"Active on {row['active_days']} days all time"
+    if current and row["active_days"] == 1:
+        return "one-off", "Seen on a single day so far"
+    if not current and previous:
+        return "dormant", "Present in the preceding period, quiet now"
+    if previous >= 3 and current * 2 <= previous:
+        return "cooling", "Less than half the preceding period"
+    return "steady", "Moving within its recent pattern"
+
+
+@api_bp.get("/link-atlas")
+@login_required
+def link_atlas():
+    start_text, end_text = _date_range()
+    start = date.fromisoformat(start_text)
+    end = date.fromisoformat(end_text)
+    span = (end - start).days + 1
+    prior_end = start - timedelta(days=1)
+    prior_start = prior_end - timedelta(days=span - 1)
+    selected_source = _source_arg()
+    limit = _int_arg("limit", 50, 1, 100)
+    private_placeholders = ",".join(
+        "?" for _ in INDIVIDUAL_ACTIVITY_PRIVATE_SITES
+    )
+
+    with _conn() as conn:
+        site = _requested_site(conn)
+        if site and site["name"] in INDIVIDUAL_ACTIVITY_PRIVATE_SITES:
+            return jsonify({
+                "scope": {"site": site["name"], "source": selected_source or None},
+                "from": start_text, "to": end_text,
+                "previous": {
+                    "from": prior_start.isoformat(), "to": prior_end.isoformat(),
+                },
+                "privacy": {
+                    "protected": True,
+                    "excluded_sites": list(INDIVIDUAL_ACTIVITY_PRIVATE_SITES),
+                },
+                "totals": {
+                    "requests": 0, "active_sources": 0, "new_sources": 0,
+                    "linked_pages": 0, "sites": 0,
+                },
+                "series": [], "sources": [], "relationships": [],
+                "available_sources": [],
+            })
+
+        site_clause = "AND r.site_id=?" if site else ""
+        parameters: tuple[Any, ...] = (
+            start_text, end_text,
+            prior_start.isoformat(), prior_end.isoformat(),
+            start_text, start_text, end_text,
+            *INDIVIDUAL_ACTIVITY_PRIVATE_SITES,
+            *((site["id"],) if site else ()),
+        )
+        source_rows = [
+            dict(row)
+            for row in conn.execute(
+                f"""
+                SELECT s.name site, LOWER(r.referrer_host) source,
+                       SUM(CASE WHEN r.day BETWEEN ? AND ?
+                           THEN r.human_nonasset_requests ELSE 0 END) requests,
+                       SUM(CASE WHEN r.day BETWEEN ? AND ?
+                           THEN r.human_nonasset_requests ELSE 0 END) prior_requests,
+                       SUM(r.human_nonasset_requests) lifetime_requests,
+                       MIN(CASE WHEN r.human_nonasset_requests>0 THEN r.day END) first_seen,
+                       MAX(CASE WHEN r.human_nonasset_requests>0 THEN r.day END) last_seen,
+                       MAX(CASE WHEN r.day<? AND r.human_nonasset_requests>0
+                           THEN r.day END) previous_seen,
+                       MIN(CASE WHEN r.day BETWEEN ? AND ?
+                                    AND r.human_nonasset_requests>0
+                           THEN r.day END) first_current,
+                       COUNT(DISTINCT CASE WHEN r.human_nonasset_requests>0
+                           THEN r.day END) active_days
+                FROM daily_referrer r JOIN sites s ON s.id=r.site_id
+                WHERE s.name NOT IN ({private_placeholders}) {site_clause}
+                GROUP BY r.site_id, LOWER(r.referrer_host)
+                HAVING SUM(r.human_nonasset_requests)>0
+                """,
+                parameters,
+            )
+        ]
+
+        available_sources = sorted({row["source"] for row in source_rows})
+        if selected_source and selected_source not in available_sources:
+            raise ApiError("Unknown referring source", 404)
+
+        for row in source_rows:
+            category, explanation = _link_source_category(row, start)
+            row["category"] = category
+            row["explanation"] = explanation
+            row["change"] = row["requests"] - row["prior_requests"]
+
+        visible_sources = [
+            row for row in source_rows
+            if (row["requests"] or row["prior_requests"])
+            and (not selected_source or row["source"] == selected_source)
+        ]
+        priority = {
+            "resurfaced": 0, "debut": 1, "rising": 2, "loyal": 3,
+            "one-off": 4, "cooling": 5, "dormant": 6, "steady": 7,
+        }
+        visible_sources.sort(key=lambda row: (
+            priority[row["category"]], -row["requests"], row["site"], row["source"]
+        ))
+
+        relationship_site_clause = "AND p.site_id=?" if site else ""
+        relationship_source_clause = "AND LOWER(p.referrer_host)=?" if selected_source else ""
+        relationship_parameters: tuple[Any, ...] = (
+            start_text, end_text, *INDIVIDUAL_ACTIVITY_PRIVATE_SITES,
+            *((site["id"],) if site else ()),
+            *((selected_source,) if selected_source else ()),
+        )
+        relationships = [
+            dict(row)
+            for row in conn.execute(
+                f"""
+                SELECT s.name site, p.path, LOWER(p.referrer_host) source,
+                       SUM(p.human_nonasset_requests) requests,
+                       MIN(p.day) first_seen, MAX(p.day) last_seen
+                FROM daily_page_referrer p JOIN sites s ON s.id=p.site_id
+                WHERE p.day BETWEEN ? AND ?
+                  AND p.human_nonasset_requests>0
+                  AND s.name NOT IN ({private_placeholders})
+                  {relationship_site_clause} {relationship_source_clause}
+                GROUP BY p.site_id, p.path, LOWER(p.referrer_host)
+                ORDER BY requests DESC, s.name, source, p.path
+                LIMIT 100
+                """,
+                relationship_parameters,
+            )
+        ]
+
+        series_site_clause = "AND r.site_id=?" if site else ""
+        series_source_clause = "AND LOWER(r.referrer_host)=?" if selected_source else ""
+        series_parameters: tuple[Any, ...] = (
+            start_text, end_text, *INDIVIDUAL_ACTIVITY_PRIVATE_SITES,
+            *((site["id"],) if site else ()),
+            *((selected_source,) if selected_source else ()),
+        )
+        stored_series = conn.execute(
+            f"""
+            SELECT r.day bucket, SUM(r.human_nonasset_requests) requests
+            FROM daily_referrer r JOIN sites s ON s.id=r.site_id
+            WHERE r.day BETWEEN ? AND ? AND r.human_nonasset_requests>0
+              AND s.name NOT IN ({private_placeholders})
+              {series_site_clause} {series_source_clause}
+            GROUP BY r.day ORDER BY r.day
+            """,
+            series_parameters,
+        )
+        values = {row["bucket"]: row["requests"] for row in stored_series}
+        series = [
+            {"bucket": day, "requests": values.get(day, 0)}
+            for day in _day_buckets(start_text, end_text)
+        ]
+
+    current_sources = [row for row in source_rows if row["requests"]]
+    if selected_source:
+        current_sources = [
+            row for row in current_sources if row["source"] == selected_source
+        ]
+    totals = {
+        "requests": sum(row["requests"] for row in current_sources),
+        "active_sources": len({row["source"] for row in current_sources}),
+        "new_sources": len({
+            (row["site"], row["source"]) for row in current_sources
+            if row["category"] == "debut"
+        }),
+        "linked_pages": len({(row["site"], row["path"]) for row in relationships}),
+        "sites": len({row["site"] for row in current_sources}),
+    }
+    return jsonify({
+        "scope": {"site": site["name"] if site else None,
+                  "source": selected_source or None},
+        "from": start_text, "to": end_text,
+        "previous": {"from": prior_start.isoformat(), "to": prior_end.isoformat()},
+        "privacy": {
+            "protected": False,
+            "excluded_sites": list(INDIVIDUAL_ACTIVITY_PRIVATE_SITES),
+        },
+        "totals": totals,
+        "series": series,
+        "sources": visible_sources[:limit],
+        "relationships": relationships,
+        "available_sources": available_sources,
+    })
 
 
 @api_bp.get("/site/<path:name>/countries")

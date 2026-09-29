@@ -43,12 +43,17 @@ log paths, retention, timezone, and log format all live in TOML configuration.
   visit depth, and page-to-page transitions. Consecutive refreshes collapse,
   only daily aggregates persist, and privacy-protected sites are never
   processed into journey data.
+- Link Atlas for the host-level relationships between referring sites and
+  destination pages, including new, rising, loyal, resurfaced, cooling, and
+  dormant sources, equal-period comparisons, and source drill-downs. Full
+  referring URLs and query strings are never retained.
 - Clickable per-page stories with permanent daily history, lifetime first and
   last sightings, referrers, AI readers, countries, and response codes.
 - Idempotent daily rollups retained after raw request pruning.
 - Authenticated JSON APIs and responsive server-rendered pages.
 - Bookmarkable all-site or single-site scopes across Live Radar, Weekly
-  Briefings, AI Crawlers, Feeds, Reading Paths, and the Traffic Almanac.
+  Briefings, AI Crawlers, Feeds, Reading Paths, Link Atlas, and the Traffic
+  Almanac.
 - Zero-filled daily charts, automatic hourly charts for retained one-day raw
   data, daily fallback for older dates, and bookmarkable date and traffic
   filters.
@@ -79,6 +84,11 @@ totals remain available without exposing paths, timestamps, or geography.
 Reading Paths applies the same boundary earlier: `ad-fontes.app` requests are
 excluded while daily journey rollups are built, so no visit sequence or
 transition for that site is stored or returned.
+
+Link Atlas uses permanent daily referrer and page/referrer aggregates, so it
+continues to work after raw-log retention expires without adding a migration or
+a visitor identifier. `ad-fontes.app` intentionally logs no referrer and is
+shown as privacy-protected rather than as a misleading empty result.
 
 ## Fresh installation in 14 steps
 

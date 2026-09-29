@@ -116,6 +116,15 @@ def journeys():
     )
 
 
+@views_bp.get("/links")
+@login_required
+def links():
+    return render_template(
+        "links.html", server_today=_server_today(), force_bots=True,
+        hide_assets=True, site_filter=True,
+    )
+
+
 @views_bp.get("/health")
 @login_required
 def health():

@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% block title %}Link Atlas | Webstats{% endblock %}
+{% block page_id %}link-atlas{% endblock %}
+{% block content %}
+<div class="page-heading">
+  <div><p class="eyebrow">How the web finds you</p><h1>Link Atlas</h1></div>
+  <p id="range-label" class="range-label"></p>
+</div>
+{% include "_filters.html" %}
+<section class="filters compact link-source-filter" aria-label="Referring source filter">
+  <div class="custom-dates">
+    <label>Referring source
+      <select id="link-source"><option value="">All sources</option></select>
+    </label>
+    <button id="clear-link-source" type="button">Clear source</button>
+  </div>
+</section>
+<div id="page-error" class="alert hidden" role="alert"></div>
+<div id="link-privacy" class="alert hidden" role="status"></div>
+<section id="link-metrics" class="metric-grid" aria-label="Link metrics"></section>
+<section class="panel chart-panel link-hero">
+  <div class="panel-heading">
+    <div><p class="eyebrow">Referred attention</p><h2 id="link-chart-heading">Visits from elsewhere</h2></div>
+    <span class="legend-note">Human page requests only</span>
+  </div>
+  <div class="chart-wrap"><canvas id="link-chart"></canvas></div>
+</section>
+<section class="panel">
+  <div class="panel-heading">
+    <div><p class="eyebrow">Source behavior</p><h2>Who keeps sending readers</h2></div>
+    <span class="legend-note">Compared with the preceding equal-length period</span>
+  </div>
+  <div id="link-sources" class="link-source-grid" aria-live="polite"></div>
+</section>
+<section class="panel">
+  <div class="panel-heading">
+    <div><p class="eyebrow">Source → destination</p><h2>Where each link leads</h2></div>
+    <span class="legend-note">Host-level referrers; no referring URLs or query strings</span>
+  </div>
+  <div id="link-relationships" class="link-map" aria-live="polite"></div>
+</section>
+<p class="muted methodology-note">Link Atlas is built from permanent daily aggregates. A source is a referring hostname, never a full referring URL. “New” means first observed in the selected range; rising and cooling compare against the immediately preceding range of the same length. Privacy-protected sites are excluded.</p>
+{% endblock %}
