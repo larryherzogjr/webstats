@@ -1315,15 +1315,20 @@
       return `<button type="button" class="${classes}" role="gridcell" aria-label="${escapeHtml(description)}" title="${escapeHtml(description)}"></button>`;
     });
     grid.innerHTML = [...blanks, ...cells].join("");
-    const monthLabels = [];
+    // Use real grid cells instead of inline grid-column styles. Production's
+    // strict CSP rejects style attributes, which previously made all labels
+    // auto-flow into the first twelve columns.
+    const monthLabels = Array.from({ length: 53 }, () => "");
     for (let month = 0; month < 12; month += 1) {
       const date = new Date(Date.UTC(data.year, month, 1, 12));
       const dayIndex = Math.round((date - first) / 86400000);
       const column = Math.floor((offset + dayIndex) / 7) + 1;
       const label = date.toLocaleDateString(undefined, { month: "short", timeZone: "UTC" });
-      monthLabels.push(`<span style="grid-column:${column}">${escapeHtml(label)}</span>`);
+      monthLabels[column - 1] = label;
     }
-    months.innerHTML = monthLabels.join("");
+    months.innerHTML = monthLabels
+      .map(label => `<span class="calendar-month-slot">${escapeHtml(label)}</span>`)
+      .join("");
   }
 
   function recordCard(label, value, detail) {
