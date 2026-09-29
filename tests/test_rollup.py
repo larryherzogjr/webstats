@@ -54,6 +54,61 @@ class RollupTests(unittest.TestCase):
         self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM requests").fetchone()[0], 0)
         self.assertEqual(self.conn.execute("SELECT requests FROM daily_site WHERE day=?", (old_day,)).fetchone()[0], 1)
 
+    def test_events_and_page_dimensions_are_idempotent(self):
+        site_id = site_id_map(self.conn)["example.com"]
+        rows = [
+            (
+                "source-referrer", "fingerprint-referrer", site_id, 1790600000,
+                "2026-09-28", "visitor", "GET", "/essay", None, 200, 10,
+                "news.ycombinator.com", "https://news.ycombinator.com/item?id=1",
+                "Mozilla/5.0", "Other browser", "Other", 0, 0, "US",
+            ),
+            (
+                "source-ai", "fingerprint-ai", site_id, 1790600001,
+                "2026-09-28", "crawler", "GET", "/essay", None, 200, 10,
+                None, None, "GPTBot/1.2", "GPTBot", "Other", 1, 0, "US",
+            ),
+        ]
+        insert_requests(self.conn, rows)
+        recompute_day(self.conn, "2026-09-28")
+        recompute_day(self.conn, "2026-09-28")
+
+        older = (
+            "source-referrer-older", "fingerprint-referrer-older", site_id,
+            1790500000, "2026-09-27", "older-visitor", "GET", "/older-essay",
+            None, 200, 10, "news.ycombinator.com",
+            "https://news.ycombinator.com/item?id=0", "Mozilla/5.0",
+            "Other browser", "Other", 0, 0, "CA",
+        )
+        insert_requests(self.conn, [older])
+        recompute_day(self.conn, "2026-09-27")
+
+        self.assertEqual(
+            self.conn.execute("SELECT COUNT(*) FROM events").fetchone()[0], 2
+        )
+        first_referrer = self.conn.execute(
+            "SELECT day, path, country FROM events WHERE kind='new_referrer'"
+        ).fetchone()
+        self.assertEqual(tuple(first_referrer), ("2026-09-27", "/older-essay", "CA"))
+        self.assertEqual(
+            tuple(
+                self.conn.execute(
+                    "SELECT path, referrer_host, human_nonasset_requests "
+                    "FROM daily_page_referrer WHERE day='2026-09-28'"
+                ).fetchone()
+            ),
+            ("/essay", "news.ycombinator.com", 1),
+        )
+        self.assertEqual(
+            tuple(
+                self.conn.execute(
+                    "SELECT path, ua_family, requests FROM daily_page_agent "
+                    "WHERE ua_family='GPTBot'"
+                ).fetchone()
+            ),
+            ("/essay", "GPTBot", 1),
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

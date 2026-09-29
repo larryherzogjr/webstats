@@ -162,6 +162,25 @@
     charts[name] = new Chart(canvas, config);
   }
 
+  function renderEvents(events) {
+    const journal = document.querySelector("#event-journal");
+    if (!journal) return;
+    if (!events.length) {
+      journal.innerHTML = '<li class="empty">No first sightings in this range yet.</li>';
+      return;
+    }
+    journal.innerHTML = events.map(event => {
+      const isReferrer = event.kind === "new_referrer";
+      const subject = isReferrer ? event.source : event.agent;
+      const label = isReferrer ? "New referrer" : "First AI crawler sighting";
+      const detail = isReferrer
+        ? `${subject} led someone to ${event.path}`
+        : `${subject} visited ${event.path}`;
+      const country = event.country ? ` · ${event.country}` : "";
+      return `<li class="event-item"><span class="event-marker ${isReferrer ? "referrer" : "crawler"}"></span><div><strong>${escapeHtml(label)}</strong><p>${escapeHtml(detail)}</p><small>${escapeHtml(event.site)} · ${escapeHtml(new Date(event.occurred_at * 1000).toLocaleString())}${escapeHtml(country)}</small></div></li>`;
+    }).join("");
+  }
+
   const chartOptions = {
     responsive: true,
     maintainAspectRatio: false,
@@ -176,7 +195,10 @@
   async function loadOverview() {
     clearError();
     try {
-      const data = await api(`/api/overview?${query()}`);
+      const [data, journal] = await Promise.all([
+        api(`/api/overview?${query()}`),
+        api(`/api/events?${query({ limit: 20 })}`),
+      ]);
       document.querySelector("#range-label").textContent = dateLabel(data.from, data.to);
       document.querySelector("#site-cards").innerHTML = data.sites.map(site => {
         const change = site.change_percent;
@@ -202,6 +224,7 @@
         metric("Server error rate (5xx)", `${data.totals.server_error_rate}%`),
         metric("Bot share", `${data.totals.bot_share}%`),
       ].join("");
+      renderEvents(journal.events);
     } catch (error) { showError(error); }
   }
 
@@ -263,6 +286,29 @@
     } catch (error) { showError(error); }
   }
 
+  async function loadAiCrawlers() {
+    clearError();
+    try {
+      const data = await api(`/api/ai-crawlers?${query({ limit: 250 })}`);
+      document.querySelector("#range-label").textContent = dateLabel(data.from, data.to);
+      document.querySelector("#ai-metrics").innerHTML = [
+        metric("Page requests", fmt.format(data.totals.requests)),
+        metric("Agents observed", fmt.format(data.totals.agents)),
+        metric("Pages explored", fmt.format(data.totals.pages)),
+        metric("Sites visited", fmt.format(data.totals.sites)),
+      ].join("");
+      fillTable("#ai-sightings", data.sightings, [
+        { key: "agent", format: (value, row) => `<strong>${escapeHtml(value)}</strong><span class="table-subtitle">${escapeHtml(row.provider)}</span>` },
+        { key: "purpose" },
+        { key: "site" },
+        { key: "path" },
+        { key: "first_seen" },
+        { key: "last_seen" },
+        { key: "requests", format: fmt.format },
+      ], "No recognized AI crawlers visited pages in this range.");
+    } catch (error) { showError(error); }
+  }
+
   async function loadHealth() {
     clearError();
     try {
@@ -298,5 +344,6 @@
     loadLive();
     window.setInterval(loadLive, 60000);
   }
+  if (page === "ai-crawlers") { setupFilters(loadAiCrawlers); loadAiCrawlers(); }
   if (page === "health") loadHealth();
 })();

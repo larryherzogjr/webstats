@@ -43,6 +43,14 @@ def live():
     return render_template("live.html")
 
 
+@views_bp.get("/ai-crawlers")
+@login_required
+def ai_crawlers():
+    return render_template(
+        "ai_crawlers.html", server_today=_server_today(), force_bots=True
+    )
+
+
 @views_bp.get("/health")
 @login_required
 def health():

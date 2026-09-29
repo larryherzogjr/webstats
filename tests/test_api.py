@@ -16,10 +16,16 @@ from webstats.db import connect, site_id_map
 from webstats.ingest import ingest_once
 
 
-def line(ip, path, status=200, ua="Mozilla/5.0 AppleWebKit/537.36 Chrome/128.0 Safari/537.36"):
+def line(
+    ip,
+    path,
+    status=200,
+    ua="Mozilla/5.0 AppleWebKit/537.36 Chrome/128.0 Safari/537.36",
+    referrer="-",
+):
     return (
         f'{ip} - - [28/Sep/2026:10:15:00 -0500] "GET {path} HTTP/1.1" '
-        f'{status} 42 "-" "{ua}"\n'
+        f'{status} 42 "{referrer}" "{ua}"\n'
     )
 
 
@@ -75,6 +81,7 @@ class ApiTests(unittest.TestCase):
             self.assertTrue(session.permanent)
         self.assertEqual(self.client.get("/").status_code, 200)
         self.assertEqual(self.client.get("/site/example.com").status_code, 200)
+        self.assertEqual(self.client.get("/ai-crawlers").status_code, 200)
         self.assertEqual(self.client.get("/live").status_code, 200)
         self.assertEqual(self.client.get("/health").status_code, 200)
         self.assertEqual(self.client.get("/site/not-configured.test").status_code, 404)
@@ -268,6 +275,63 @@ class ApiTests(unittest.TestCase):
                 {"group": "X / Twitter", "requests": 30},
             ],
         )
+
+    def test_event_journal_and_ai_crawler_field_guide(self):
+        with self.log.open("a") as handle:
+            handle.write(
+                line(
+                    "203.0.113.20",
+                    "/linked-essay",
+                    referrer="https://news.ycombinator.com/item?id=1",
+                )
+            )
+            handle.write(
+                line(
+                    "203.0.113.21",
+                    "/ai-essay",
+                    ua="GPTBot/1.2 (+https://openai.com/gptbot)",
+                )
+            )
+            handle.write(
+                line(
+                    "203.0.113.21",
+                    "/ai-style.css",
+                    ua="GPTBot/1.2 (+https://openai.com/gptbot)",
+                )
+            )
+        ingest_once(self.config)
+        self.authenticate()
+
+        events = self.client.get(
+            "/api/events?from=2026-09-28&to=2026-09-28"
+        ).get_json()["events"]
+        self.assertEqual(
+            {(event["kind"], event["path"]) for event in events},
+            {
+                ("new_referrer", "/linked-essay"),
+                ("first_ai_visit", "/ai-essay"),
+            },
+        )
+        referrer = next(
+            event for event in events if event["kind"] == "new_referrer"
+        )
+        self.assertEqual(referrer["source"], "news.ycombinator.com")
+
+        body = self.client.get(
+            "/api/ai-crawlers?from=2026-09-28&to=2026-09-28"
+        ).get_json()
+        self.assertEqual(
+            body["totals"],
+            {"requests": 1, "agents": 1, "pages": 1, "sites": 1},
+        )
+        self.assertEqual(body["sightings"][0]["agent"], "GPTBot")
+        self.assertEqual(body["sightings"][0]["provider"], "OpenAI")
+        self.assertEqual(body["sightings"][0]["path"], "/ai-essay")
+        with_assets = self.client.get(
+            "/api/ai-crawlers?from=2026-09-28&to=2026-09-28&assets=1"
+        ).get_json()
+        self.assertEqual(with_assets["totals"]["requests"], 2)
+        self.assertEqual(with_assets["totals"]["pages"], 2)
 
     def test_invalid_range_is_rejected(self):
         self.authenticate()

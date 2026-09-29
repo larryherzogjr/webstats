@@ -15,6 +15,7 @@ from zoneinfo import ZoneInfo
 from flask import Blueprint, current_app, jsonify, request
 
 from .auth import login_required
+from .bots import AI_AGENTS
 from .db import connect
 
 
@@ -165,6 +166,83 @@ def sites():
     with _conn() as conn:
         rows = [dict(row) for row in conn.execute("SELECT name FROM sites ORDER BY name")]
     return jsonify({"sites": rows})
+
+
+@api_bp.get("/events")
+@login_required
+def events():
+    start, end = _date_range()
+    limit = _int_arg("limit", 20, 1, 100)
+    with _conn() as conn:
+        rows = [
+            dict(row)
+            for row in conn.execute(
+                """
+                SELECT e.kind, e.occurred_at, e.day, e.path, e.source,
+                       e.agent, e.country, e.value, s.name site
+                FROM events e JOIN sites s ON s.id=e.site_id
+                WHERE e.day BETWEEN ? AND ?
+                ORDER BY e.occurred_at DESC, e.id DESC LIMIT ?
+                """,
+                (start, end, limit),
+            )
+        ]
+    return jsonify({"from": start, "to": end, "events": rows})
+
+
+@api_bp.get("/ai-crawlers")
+@login_required
+def ai_crawlers():
+    start, end = _date_range()
+    _, assets = _flags()
+    limit = _int_arg("limit", 100, 1, 500)
+    value = "requests" if assets else "requests-asset_requests"
+    families = tuple(AI_AGENTS)
+    placeholders = ",".join("?" for _ in families)
+    with _conn() as conn:
+        totals_row = conn.execute(
+            f"""
+            SELECT COALESCE(SUM({value}),0) requests,
+                   COUNT(DISTINCT ua_family) agents,
+                   COUNT(DISTINCT site_id || char(0) || path) pages,
+                   COUNT(DISTINCT site_id) sites,
+                   COUNT(DISTINCT site_id || char(0) || ua_family || char(0) || path)
+                       sightings
+            FROM daily_page_agent
+            WHERE day BETWEEN ? AND ? AND ua_family IN ({placeholders})
+              AND is_bot=1 AND {value} > 0
+            """,
+            (start, end, *families),
+        ).fetchone()
+        stored = conn.execute(
+            f"""
+            SELECT s.name site, p.ua_family agent, p.path,
+                   SUM({value}) requests, MIN(p.day) first_seen,
+                   MAX(p.day) last_seen
+            FROM daily_page_agent p JOIN sites s ON s.id=p.site_id
+            WHERE p.day BETWEEN ? AND ? AND p.is_bot=1
+              AND p.ua_family IN ({placeholders})
+            GROUP BY p.site_id, p.ua_family, p.path
+            HAVING SUM({value}) > 0
+            ORDER BY requests DESC, last_seen DESC, site, agent, path
+            LIMIT ?
+            """,
+            (start, end, *families, limit),
+        )
+        rows = []
+        for row in stored:
+            provider, purpose = AI_AGENTS[row["agent"]]
+            rows.append({**dict(row), "provider": provider, "purpose": purpose})
+    totals = {
+        key: totals_row[key] for key in ("requests", "agents", "pages", "sites")
+    }
+    return jsonify({
+        "from": start,
+        "to": end,
+        "sightings": rows,
+        "totals": totals,
+        "limited": totals_row["sightings"] > len(rows),
+    })
 
 
 @api_bp.get("/overview")

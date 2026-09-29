@@ -11,7 +11,9 @@
     <button id="apply-dates">Apply</button>
   </div>
   <div class="toggles">
+    {% if not force_bots %}
     <label class="switch"><input id="include-bots" type="checkbox"> Include bots</label>
+    {% endif %}
     <label class="switch"><input id="include-assets" type="checkbox"> Include assets</label>
   </div>
 </section>

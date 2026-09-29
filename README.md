@@ -18,6 +18,8 @@ log paths, retention, timezone, and log format all live in TOML configuration.
 - Daily rotating IP hashes for daily visitor counts without cross-day tracking.
 - Bot, browser, operating-system, static-asset, referrer, status, and optional
   country classification.
+- A durable event journal for first-time referrers and AI crawler
+  sightings, plus a page-level AI crawler field guide.
 - Idempotent daily rollups retained after raw request pruning.
 - Authenticated JSON APIs and responsive server-rendered pages.
 - Zero-filled daily charts, automatic hourly charts for retained one-day raw
@@ -28,6 +30,11 @@ log paths, retention, timezone, and log format all live in TOML configuration.
   status.
 - systemd, nginx, health-check, password, and backfill assets.
 - Versioned SQLite migrations and GitHub Actions checks for Python 3.11 and 3.12.
+
+The event journal and AI field guide use permanent daily aggregates. They add
+no persistent visitor identifier and do not extend raw request or IP-hash
+retention. Schema upgrades rebuild the new dimensions for raw days still inside
+the configured retention window; future observations then accumulate normally.
 
 ## Fresh installation in 14 steps
 

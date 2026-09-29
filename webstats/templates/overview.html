@@ -14,5 +14,11 @@
   <div class="chart-wrap"><canvas id="overview-chart"></canvas></div>
 </section>
 <section class="metric-grid" id="server-metrics" aria-label="Server-wide metrics"></section>
+<section class="panel">
+  <div class="panel-heading">
+    <div><p class="eyebrow">Internet field notes</p><h2>What happened</h2></div>
+    <a class="text-link" href="{{ url_for('views.ai_crawlers') }}">Explore AI crawlers</a>
+  </div>
+  <ol id="event-journal" class="event-journal" aria-live="polite"></ol>
+</section>
 {% endblock %}
-

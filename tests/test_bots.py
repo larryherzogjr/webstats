@@ -5,7 +5,14 @@ from webstats.bots import classify_user_agent
 
 class BotTests(unittest.TestCase):
     def test_known_crawlers(self):
-        for value in ("Googlebot/2.1", "GPTBot/1.0", "ClaudeBot/1.0", "CCBot/2.0"):
+        for value in (
+            "Googlebot/2.1",
+            "GPTBot/1.0",
+            "ClaudeBot/1.0",
+            "Mozilla/5.0; compatible; Claude-SearchBot/1.0",
+            "Perplexity-User/1.0",
+            "CCBot/2.0",
+        ):
             with self.subTest(value=value):
                 self.assertTrue(classify_user_agent(value)[1])
 
@@ -24,4 +31,3 @@ class BotTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

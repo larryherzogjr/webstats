@@ -6,10 +6,11 @@ import sqlite3
 from pathlib import Path
 from typing import Iterable
 
+from .bots import classify_user_agent
 from .config import Config
 
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -98,12 +99,27 @@ CREATE TABLE IF NOT EXISTS daily_referrer (
     human_nonasset_requests INTEGER NOT NULL,
     PRIMARY KEY(site_id, day, referrer_host)
 );
+CREATE TABLE IF NOT EXISTS daily_page_referrer (
+    site_id INTEGER NOT NULL REFERENCES sites(id), day TEXT NOT NULL,
+    path TEXT NOT NULL, referrer_host TEXT NOT NULL,
+    requests INTEGER NOT NULL, human_requests INTEGER NOT NULL,
+    nonasset_requests INTEGER NOT NULL,
+    human_nonasset_requests INTEGER NOT NULL,
+    PRIMARY KEY(site_id, day, path, referrer_host)
+);
 CREATE TABLE IF NOT EXISTS daily_agent (
     site_id INTEGER NOT NULL REFERENCES sites(id), day TEXT NOT NULL,
     ua_family TEXT NOT NULL, os_family TEXT NOT NULL,
     is_bot INTEGER NOT NULL, requests INTEGER NOT NULL,
     asset_requests INTEGER NOT NULL,
     PRIMARY KEY(site_id, day, ua_family, os_family, is_bot)
+);
+CREATE TABLE IF NOT EXISTS daily_page_agent (
+    site_id INTEGER NOT NULL REFERENCES sites(id), day TEXT NOT NULL,
+    path TEXT NOT NULL, ua_family TEXT NOT NULL,
+    is_bot INTEGER NOT NULL, requests INTEGER NOT NULL,
+    asset_requests INTEGER NOT NULL,
+    PRIMARY KEY(site_id, day, path, ua_family, is_bot)
 );
 CREATE TABLE IF NOT EXISTS daily_country (
     site_id INTEGER NOT NULL REFERENCES sites(id), day TEXT NOT NULL,
@@ -126,6 +142,23 @@ CREATE TABLE IF NOT EXISTS daily_404 (
     human_nonasset_requests INTEGER NOT NULL,
     PRIMARY KEY(site_id, day, path)
 );
+CREATE TABLE IF NOT EXISTS events (
+    id INTEGER PRIMARY KEY,
+    site_id INTEGER NOT NULL REFERENCES sites(id),
+    kind TEXT NOT NULL,
+    event_key TEXT NOT NULL UNIQUE,
+    occurred_at INTEGER NOT NULL,
+    day TEXT NOT NULL,
+    path TEXT,
+    source TEXT,
+    agent TEXT,
+    country TEXT,
+    value INTEGER,
+    created_at INTEGER NOT NULL DEFAULT (unixepoch())
+);
+CREATE INDEX IF NOT EXISTS events_day ON events(day, occurred_at DESC);
+CREATE INDEX IF NOT EXISTS events_site_day
+    ON events(site_id, day, occurred_at DESC);
 """
 
 
@@ -159,7 +192,30 @@ def _migrate_1_to_2(conn: sqlite3.Connection) -> None:
     )
 
 
-MIGRATIONS = {1: _migrate_1_to_2}
+def _migrate_2_to_3(conn: sqlite3.Connection) -> None:
+    _execute_schema(conn)
+    reclassified = []
+    for row in conn.execute(
+        "SELECT id, user_agent, ua_family, is_bot FROM requests"
+    ):
+        family, is_bot = classify_user_agent(row["user_agent"])
+        if family != row["ua_family"] or int(is_bot) != row["is_bot"]:
+            reclassified.append((family, int(is_bot), row["id"]))
+    conn.executemany(
+        "UPDATE requests SET ua_family=?, is_bot=? WHERE id=?", reclassified
+    )
+
+    # Rebuild only days whose complete raw rows still exist. Older permanent
+    # rollups remain untouched, while every retained day gains the new page
+    # dimensions and event history using the current agent classifier.
+    from .rollup import recompute_day
+
+    days = [row["day"] for row in conn.execute("SELECT DISTINCT day FROM requests")]
+    for day in days:
+        recompute_day(conn, day)
+
+
+MIGRATIONS = {1: _migrate_1_to_2, 2: _migrate_2_to_3}
 
 
 def _execute_schema(conn: sqlite3.Connection) -> None:

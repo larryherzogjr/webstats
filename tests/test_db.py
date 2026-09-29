@@ -28,8 +28,17 @@ class DatabaseMigrationTests(unittest.TestCase):
                 columns = {
                     row["name"] for row in conn.execute("PRAGMA table_info(requests)")
                 }
+                tables = {
+                    row["name"]
+                    for row in conn.execute(
+                        "SELECT name FROM sqlite_master WHERE type='table'"
+                    )
+                }
             self.assertEqual(version, SCHEMA_VERSION)
             self.assertIn("source_fingerprint", columns)
+            self.assertTrue(
+                {"daily_page_referrer", "daily_page_agent", "events"} <= tables
+            )
 
     def test_version_one_database_is_migrated_in_place(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -39,18 +48,41 @@ class DatabaseMigrationTests(unittest.TestCase):
                 """
                 CREATE TABLE schema_version(version INTEGER NOT NULL);
                 INSERT INTO schema_version VALUES (1);
+                CREATE TABLE sites(
+                    id INTEGER PRIMARY KEY,
+                    name TEXT NOT NULL UNIQUE
+                );
+                INSERT INTO sites(id, name) VALUES (1, 'example.com');
                 CREATE TABLE requests(
                     id INTEGER PRIMARY KEY,
                     source_key TEXT NOT NULL UNIQUE,
                     site_id INTEGER NOT NULL,
                     ts INTEGER NOT NULL,
                     day TEXT NOT NULL,
+                    ip_hash TEXT NOT NULL,
+                    method TEXT NOT NULL,
                     path TEXT NOT NULL,
-                    is_bot INTEGER NOT NULL
+                    query TEXT,
+                    status INTEGER NOT NULL,
+                    bytes INTEGER NOT NULL DEFAULT 0,
+                    referrer_host TEXT,
+                    referrer TEXT,
+                    user_agent TEXT NOT NULL,
+                    ua_family TEXT NOT NULL,
+                    os_family TEXT NOT NULL,
+                    is_bot INTEGER NOT NULL,
+                    is_asset INTEGER NOT NULL,
+                    country TEXT
                 );
                 INSERT INTO requests(
-                    source_key, site_id, ts, day, path, is_bot
-                ) VALUES ('/log:123:0:0123456789abcdef', 1, 1, '2026-09-28', '/', 0);
+                    source_key, site_id, ts, day, ip_hash, method, path,
+                    status, bytes, user_agent, ua_family, os_family,
+                    is_bot, is_asset
+                ) VALUES (
+                    '/log:123:0:0123456789abcdef', 1, 1, '2026-09-28',
+                    'visitor', 'GET', '/', 200, 10, 'GPTBot/1.2',
+                    'GPTBot', 'Other', 1, 0
+                );
                 """
             )
             raw.close()
@@ -61,8 +93,16 @@ class DatabaseMigrationTests(unittest.TestCase):
                 fingerprint = conn.execute(
                     "SELECT source_fingerprint FROM requests"
                 ).fetchone()[0]
-            self.assertEqual(version, 2)
+                page_agent = conn.execute(
+                    "SELECT path, ua_family FROM daily_page_agent"
+                ).fetchone()
+                event = conn.execute(
+                    "SELECT kind, agent FROM events"
+                ).fetchone()
+            self.assertEqual(version, SCHEMA_VERSION)
             self.assertEqual(fingerprint, "0123456789abcdef")
+            self.assertEqual(tuple(page_agent), ("/", "GPTBot"))
+            self.assertEqual(tuple(event), ("first_ai_visit", "GPTBot"))
 
     def test_newer_database_is_rejected(self):
         with tempfile.TemporaryDirectory() as temp:

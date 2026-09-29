@@ -7,6 +7,8 @@ from datetime import datetime, timedelta
 from typing import Iterable, Optional
 from zoneinfo import ZoneInfo
 
+from .bots import AI_AGENTS
+
 
 def maintain_rollups(
     conn: sqlite3.Connection,
@@ -30,8 +32,8 @@ def maintain_rollups(
 def recompute_day(conn: sqlite3.Connection, day: str) -> None:
     tables = (
         "daily_site", "daily_traffic", "daily_filter", "daily_path",
-        "daily_referrer", "daily_agent", "daily_country", "daily_status",
-        "daily_404",
+        "daily_referrer", "daily_page_referrer", "daily_agent",
+        "daily_page_agent", "daily_country", "daily_status", "daily_404",
     )
     for table in tables:
         conn.execute(f"DELETE FROM {table} WHERE day = ?", (day,))
@@ -108,9 +110,28 @@ def recompute_day(conn: sqlite3.Connection, day: str) -> None:
     )
     conn.execute(
         """
+        INSERT INTO daily_page_referrer
+        SELECT site_id, day, path, referrer_host, COUNT(*), SUM(is_bot=0),
+               SUM(is_asset=0), SUM(is_bot=0 AND is_asset=0)
+        FROM requests WHERE day=? AND referrer_host IS NOT NULL
+        GROUP BY site_id, day, path, referrer_host
+        """,
+        (day,),
+    )
+    conn.execute(
+        """
         INSERT INTO daily_agent
         SELECT site_id, day, ua_family, os_family, is_bot, COUNT(*), SUM(is_asset=1)
         FROM requests WHERE day=? GROUP BY site_id, day, ua_family, os_family, is_bot
+        """,
+        (day,),
+    )
+    conn.execute(
+        """
+        INSERT INTO daily_page_agent
+        SELECT site_id, day, path, ua_family, is_bot, COUNT(*), SUM(is_asset=1)
+        FROM requests WHERE day=?
+        GROUP BY site_id, day, path, ua_family, is_bot
         """,
         (day,),
     )
@@ -133,3 +154,75 @@ def recompute_day(conn: sqlite3.Connection, day: str) -> None:
         """,
         (day,),
     )
+    _refresh_events_for_day(conn, day)
+
+
+def _upsert_event(conn: sqlite3.Connection, row: sqlite3.Row, kind: str) -> None:
+    subject = row["referrer_host"] if kind == "new_referrer" else row["ua_family"]
+    conn.execute(
+        """
+        INSERT INTO events(
+            site_id, kind, event_key, occurred_at, day, path,
+            source, agent, country
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(event_key) DO UPDATE SET
+            occurred_at=excluded.occurred_at,
+            day=excluded.day,
+            path=excluded.path,
+            source=excluded.source,
+            agent=excluded.agent,
+            country=excluded.country
+        WHERE excluded.occurred_at < events.occurred_at
+        """,
+        (
+            row["site_id"],
+            kind,
+            f"{kind}:{row['site_id']}:{subject}",
+            row["ts"],
+            row["day"],
+            row["path"],
+            row["referrer_host"] if kind == "new_referrer" else None,
+            row["ua_family"] if kind == "first_ai_visit" else None,
+            row["country"],
+        ),
+    )
+
+
+def _refresh_events_for_day(conn: sqlite3.Connection, day: str) -> None:
+    referrers = conn.execute(
+        """
+        SELECT site_id, ts, day, path, referrer_host, NULL ua_family, country
+        FROM (
+            SELECT site_id, ts, day, path, referrer_host, country,
+                   ROW_NUMBER() OVER (
+                       PARTITION BY site_id, referrer_host ORDER BY ts, id
+                   ) position
+            FROM requests
+            WHERE day=? AND referrer_host IS NOT NULL
+              AND is_bot=0 AND is_asset=0
+        ) WHERE position=1
+        """,
+        (day,),
+    )
+    for row in referrers:
+        _upsert_event(conn, row, "new_referrer")
+
+    families = tuple(AI_AGENTS)
+    placeholders = ",".join("?" for _ in families)
+    crawlers = conn.execute(
+        f"""
+        SELECT site_id, ts, day, path, NULL referrer_host, ua_family, country
+        FROM (
+            SELECT site_id, ts, day, path, ua_family, country,
+                   ROW_NUMBER() OVER (
+                       PARTITION BY site_id, ua_family ORDER BY ts, id
+                   ) position
+            FROM requests
+            WHERE day=? AND is_bot=1 AND is_asset=0
+              AND ua_family IN ({placeholders})
+        ) WHERE position=1
+        """,
+        (day, *families),
+    )
+    for row in crawlers:
+        _upsert_event(conn, row, "first_ai_visit")

@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% block title %}AI crawlers | Webstats{% endblock %}
+{% block page_id %}ai-crawlers{% endblock %}
+{% block content %}
+<div class="page-heading">
+  <div><p class="eyebrow">Robot naturalist</p><h1>AI crawler field guide</h1></div>
+  <p id="range-label" class="range-label"></p>
+</div>
+{% include "_filters.html" %}
+<div id="page-error" class="alert hidden" role="alert"></div>
+<section id="ai-metrics" class="metric-grid" aria-label="AI crawler metrics"></section>
+<section class="panel">
+  <div class="panel-heading">
+    <div><p class="eyebrow">Observed in the logs</p><h2>Agents and pages</h2></div>
+    <span class="legend-note">Page requests only by default</span>
+  </div>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Agent</th><th>Purpose</th><th>Site</th><th>Path</th><th>First seen</th><th>Last seen</th><th>Requests</th></tr></thead>
+    <tbody id="ai-sightings"></tbody>
+  </table></div>
+</section>
+{% endblock %}

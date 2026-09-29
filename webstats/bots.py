@@ -20,12 +20,28 @@ KNOWN_BOTS = (
     ("OAI-SearchBot", "OAI-SearchBot"),
     ("ClaudeBot", "ClaudeBot"),
     ("Claude-User", "Claude-User"),
+    ("Claude-SearchBot", "Claude-SearchBot"),
+    ("PerplexityBot", "PerplexityBot"),
+    ("Perplexity-User", "Perplexity-User"),
     ("CCBot", "CCBot"),
     ("facebookexternalhit", "Facebook"),
     ("Twitterbot", "Twitterbot"),
     ("LinkedInBot", "LinkedInBot"),
     ("UptimeRobot", "UptimeRobot"),
 )
+
+AI_AGENTS = {
+    "GPTBot": ("OpenAI", "Model training"),
+    "ChatGPT-User": ("OpenAI", "User-requested retrieval"),
+    "OAI-SearchBot": ("OpenAI", "Search"),
+    "ClaudeBot": ("Anthropic", "Model training"),
+    "Claude-User": ("Anthropic", "User-requested retrieval"),
+    "Claude-SearchBot": ("Anthropic", "Search"),
+    "PerplexityBot": ("Perplexity", "Search"),
+    "Perplexity-User": ("Perplexity", "User-requested retrieval"),
+    "Bytespider": ("ByteDance", "AI crawler"),
+    "CCBot": ("Common Crawl", "Open web corpus"),
+}
 
 GENERIC_BOTS = (
     ("python-requests", "python-requests"),
@@ -83,4 +99,3 @@ def os_family(user_agent: str) -> str:
         if needle in user_agent:
             return name
     return "Other"
-
