@@ -145,7 +145,8 @@
         metric("Total requests", fmt.format(data.totals.requests)),
         metric("Daily visitors", fmt.format(data.totals.unique_visitors)),
         metric("Bandwidth", compactBytes(data.totals.bytes)),
-        metric("Error rate", `${data.totals.error_rate}%`),
+        metric("Client error rate (4xx)", `${data.totals.client_error_rate}%`),
+        metric("Server error rate (5xx)", `${data.totals.server_error_rate}%`),
         metric("Bot share", `${data.totals.bot_share}%`),
       ].join("");
     } catch (error) { showError(error); }

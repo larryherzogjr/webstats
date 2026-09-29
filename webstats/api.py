@@ -160,7 +160,8 @@ def overview():
                 SELECT s.name, COALESCE(SUM(f.requests),0) requests,
                        COALESCE(SUM(f.unique_visitors),0) unique_visitors,
                        COALESCE(SUM(f.bytes),0) bytes,
-                       COALESCE(SUM(f.status_4xx+f.status_5xx),0) errors
+                       COALESCE(SUM(f.status_4xx),0) status_4xx,
+                       COALESCE(SUM(f.status_5xx),0) status_5xx
                 FROM sites s LEFT JOIN daily_filter f ON f.site_id=s.id
                   AND f.day BETWEEN ? AND ? AND f.include_bots=? AND f.include_assets=?
                 GROUP BY s.id ORDER BY s.name
@@ -205,12 +206,17 @@ def overview():
         previous = prior.get(name, 0)
         change = None if previous == 0 else round((row["requests"] - previous) * 100 / previous, 1)
         cards.append({**row, "change_percent": change})
+    total_requests = sum(item["requests"] for item in cards)
+    client_errors = sum(item["status_4xx"] for item in cards)
+    server_errors = sum(item["status_5xx"] for item in cards)
     totals = {
-        "requests": sum(item["requests"] for item in cards),
+        "requests": total_requests,
         "unique_visitors": sum(item["unique_visitors"] for item in cards),
         "bytes": sum(item["bytes"] for item in cards),
+        "client_error_rate": round(100 * client_errors / max(1, total_requests), 2),
+        "server_error_rate": round(100 * server_errors / max(1, total_requests), 2),
         "error_rate": round(
-            100 * sum(item["errors"] for item in cards) / max(1, sum(item["requests"] for item in cards)), 2
+            100 * (client_errors + server_errors) / max(1, total_requests), 2
         ),
         "bot_share": round(100 * bot_totals[0] / max(1, bot_totals[1]), 2),
     }

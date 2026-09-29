@@ -94,7 +94,11 @@ class ApiTests(unittest.TestCase):
         self.authenticate()
         response = self.client.get("/api/overview?from=2026-09-28&to=2026-09-28")
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.get_json()["sites"][0]["requests"], 2)
+        body = response.get_json()
+        self.assertEqual(body["sites"][0]["requests"], 2)
+        self.assertEqual(body["totals"]["client_error_rate"], 50.0)
+        self.assertEqual(body["totals"]["server_error_rate"], 0.0)
+        self.assertEqual(body["totals"]["error_rate"], 50.0)
         response = self.client.get("/api/overview?from=2026-09-28&to=2026-09-28&bots=1&assets=1")
         self.assertEqual(response.get_json()["sites"][0]["requests"], 4)
 
