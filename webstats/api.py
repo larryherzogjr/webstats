@@ -20,6 +20,7 @@ from .bots import AI_AGENTS
 from .db import connect
 from .episodes import detect_episodes
 from .privacy import INDIVIDUAL_ACTIVITY_PRIVATE_SITES
+from .reliability import detect_error_bursts
 from .robots import fetch_robots_policies, parse_robots, path_allowed, policy_for
 from .rollup import PROBE_PATH_PREFIXES, PROBE_PATHS
 from .sitemaps import fetch_sitemap_inventories
@@ -1574,6 +1575,291 @@ def attention_episodes():
         },
         "narrative": narrative,
         "episodes": detected,
+    })
+
+
+def _weighted_metric(rows: Iterable[dict[str, Any]], key: str) -> Optional[int]:
+    usable = [row for row in rows if row.get(key) is not None and row["timed_requests"]]
+    samples = sum(row["timed_requests"] for row in usable)
+    if not samples:
+        return None
+    return round(sum(row[key] * row["timed_requests"] for row in usable) / samples)
+
+
+def _performance_totals(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    requests = sum(row["requests"] for row in rows)
+    timed = sum(row["timed_requests"] for row in rows)
+    total_ms = sum(row["total_ms"] for row in rows)
+    total_bytes = sum(row["total_bytes"] for row in rows)
+    return {
+        "requests": requests,
+        "timed_requests": timed,
+        "timing_coverage_percent": round(100 * timed / requests, 1) if requests else 0.0,
+        "average_ms": round(total_ms / timed) if timed else None,
+        "p50_ms": _weighted_metric(rows, "p50_ms"),
+        "p95_ms": _weighted_metric(rows, "p95_ms"),
+        "max_ms": max((row["max_ms"] or 0 for row in rows), default=0) or None,
+        "average_bytes": round(total_bytes / requests) if requests else 0,
+        "max_bytes": max((row["max_bytes"] for row in rows), default=0),
+    }
+
+
+@api_bp.get("/reliability")
+@login_required
+def performance_reliability():
+    start_text, end_text = _date_range()
+    start = date.fromisoformat(start_text)
+    end = date.fromisoformat(end_text)
+    span = (end - start).days + 1
+    prior_end = start - timedelta(days=1)
+    prior_start = prior_end - timedelta(days=span - 1)
+    config = current_app.config["WEBSTATS_CONFIG"]
+    today = datetime.now(ZoneInfo(config.server.timezone)).date()
+    analysis_start = start - timedelta(days=28)
+    analysis_end = min(today, end + timedelta(days=7))
+    limit = _int_arg("limit", 50, 1, 200)
+
+    with _conn() as conn:
+        selected_site = _requested_site(conn)
+        if selected_site and selected_site["name"] in INDIVIDUAL_ACTIVITY_PRIVATE_SITES:
+            return jsonify({
+                "from": start_text, "to": end_text,
+                "previous_from": prior_start.isoformat(),
+                "previous_to": prior_end.isoformat(),
+                "scope": {"site": selected_site["name"]},
+                "privacy": {"protected": True},
+                "summary": {
+                    "requests": 0, "timed_requests": 0,
+                    "timing_coverage_percent": 0.0, "average_ms": None,
+                    "p50_ms": None, "p95_ms": None, "max_ms": None,
+                    "average_bytes": 0, "max_bytes": 0, "app_4xx": 0,
+                    "app_5xx": 0, "scanner_requests": 0, "incidents": 0,
+                },
+                "previous": {}, "series": [], "pages": [], "incidents": [],
+                "error_paths": [],
+                "narrative": "Performance and reliability details are intentionally unavailable for this privacy-protected site.",
+            })
+        placeholders = ",".join("?" for _ in INDIVIDUAL_ACTIVITY_PRIVATE_SITES)
+        site_clause = "AND s.id=?" if selected_site else ""
+        site_parameters = (
+            *INDIVIDUAL_ACTIVITY_PRIVATE_SITES,
+            *((selected_site["id"],) if selected_site else ()),
+        )
+        sites = [
+            dict(row) for row in conn.execute(
+                f"SELECT s.id, s.name FROM sites s WHERE s.name NOT IN ({placeholders}) {site_clause} ORDER BY s.name",
+                site_parameters,
+            )
+        ]
+        reliability_rows = [
+            dict(row) for row in conn.execute(
+                f"""
+                SELECT r.*, s.name site FROM daily_reliability r
+                JOIN sites s ON s.id=r.site_id
+                WHERE r.day BETWEEN ? AND ?
+                  AND s.name NOT IN ({placeholders}) {site_clause}
+                ORDER BY r.day, s.name
+                """,
+                (
+                    min(analysis_start, prior_start).isoformat(),
+                    analysis_end.isoformat(), *site_parameters,
+                ),
+            )
+        ]
+        performance_rows = [
+            dict(row) for row in conn.execute(
+                f"""
+                SELECT p.*, s.name site FROM daily_performance p
+                JOIN sites s ON s.id=p.site_id
+                WHERE p.day BETWEEN ? AND ?
+                  AND s.name NOT IN ({placeholders}) {site_clause}
+                ORDER BY s.name, p.path, p.day
+                """,
+                (prior_start.isoformat(), end_text, *site_parameters),
+            )
+        ]
+
+        error_path_rows = [
+            dict(row) for row in conn.execute(
+                f"""
+                SELECT s.name site, d.path, d.status,
+                       SUM(d.human_nonasset_requests) requests
+                FROM daily_page_status d JOIN sites s ON s.id=d.site_id
+                WHERE d.day BETWEEN ? AND ? AND d.status>=400
+                  AND s.name NOT IN ({placeholders}) {site_clause}
+                GROUP BY d.site_id, d.path, d.status
+                HAVING SUM(d.human_nonasset_requests)>0
+                ORDER BY requests DESC, s.name, d.path LIMIT 500
+                """,
+                (start_text, end_text, *site_parameters),
+            )
+        ]
+
+    current_reliability = [
+        row for row in reliability_rows if start_text <= row["day"] <= end_text
+    ]
+    previous_reliability = [
+        row for row in reliability_rows
+        if prior_start.isoformat() <= row["day"] <= prior_end.isoformat()
+    ]
+    summary = _performance_totals(current_reliability)
+    summary.update({
+        "app_4xx": sum(row["app_4xx"] for row in current_reliability),
+        "app_5xx": sum(row["app_5xx"] for row in current_reliability),
+        "scanner_requests": sum(row["scanner_requests"] for row in current_reliability),
+        "scanner_errors": sum(row["scanner_errors"] for row in current_reliability),
+    })
+    previous = _performance_totals(previous_reliability)
+    previous.update({
+        "app_4xx": sum(row["app_4xx"] for row in previous_reliability),
+        "app_5xx": sum(row["app_5xx"] for row in previous_reliability),
+        "scanner_requests": sum(row["scanner_requests"] for row in previous_reliability),
+    })
+
+    daily_rows: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for row in current_reliability:
+        daily_rows[row["day"]].append(row)
+    series = []
+    for day in _day_buckets(start_text, end_text):
+        rows = daily_rows.get(day, [])
+        totals = _performance_totals(rows)
+        series.append({
+            "day": day, "requests": totals["requests"],
+            "timed_requests": totals["timed_requests"],
+            "average_ms": totals["average_ms"], "p95_ms": totals["p95_ms"],
+            "app_4xx": sum(row["app_4xx"] for row in rows),
+            "app_5xx": sum(row["app_5xx"] for row in rows),
+            "app_errors": sum(row["app_4xx"] + row["app_5xx"] for row in rows),
+            "scanner_requests": sum(row["scanner_requests"] for row in rows),
+        })
+
+    page_groups: dict[tuple[str, str], dict[str, list[dict[str, Any]]]] = defaultdict(
+        lambda: {"current": [], "previous": []}
+    )
+    for row in performance_rows:
+        window = "current" if start_text <= row["day"] <= end_text else "previous"
+        page_groups[(row["site"], row["path"])][window].append(row)
+    pages = []
+    incidents = []
+    for (site, path), windows in page_groups.items():
+        current = _performance_totals(windows["current"])
+        prior = _performance_totals(windows["previous"])
+        if not current["requests"]:
+            continue
+        latency_change = (
+            current["p95_ms"] - prior["p95_ms"]
+            if current["p95_ms"] is not None and prior["p95_ms"] is not None
+            else None
+        )
+        size_change = current["average_bytes"] - prior["average_bytes"]
+        item = {
+            "site": site, "path": path, **current,
+            "previous_requests": prior["requests"],
+            "previous_timed_requests": prior["timed_requests"],
+            "previous_p95_ms": prior["p95_ms"],
+            "previous_average_bytes": prior["average_bytes"],
+            "latency_change_ms": latency_change,
+            "size_change_bytes": size_change,
+        }
+        pages.append(item)
+        if (
+            current["timed_requests"] >= 3 and prior["timed_requests"] >= 3
+            and current["p95_ms"] >= prior["p95_ms"] * 1.5
+            and latency_change >= 100
+        ):
+            incidents.append({
+                "kind": "latency-regression", "site": site, "path": path,
+                "value": current["p95_ms"], "previous": prior["p95_ms"],
+                "change": latency_change,
+                "explanation": "Tail latency rose at least 50% and 100 ms versus the preceding equal window.",
+            })
+        elif current["timed_requests"] >= 3 and current["p95_ms"] >= 1000:
+            incidents.append({
+                "kind": "slow-page", "site": site, "path": path,
+                "value": current["p95_ms"], "previous": prior["p95_ms"],
+                "change": latency_change,
+                "explanation": "95th-percentile response time reached at least one second.",
+            })
+        if (
+            current["requests"] >= 3 and prior["requests"] >= 3
+            and abs(size_change) >= max(25_000, prior["average_bytes"] * .5)
+        ):
+            incidents.append({
+                "kind": "size-anomaly", "site": site, "path": path,
+                "value": current["average_bytes"],
+                "previous": prior["average_bytes"], "change": size_change,
+                "explanation": "Average response size moved at least 50% and 25 KB versus the preceding equal window.",
+            })
+
+    reliability_by_site_day = {
+        (row["site"], row["day"]): row for row in reliability_rows
+    }
+    error_bursts = []
+    for site in sites:
+        site_series = []
+        for day in _day_buckets(analysis_start.isoformat(), analysis_end.isoformat()):
+            row = reliability_by_site_day.get((site["name"], day), {})
+            site_series.append({
+                "day": day,
+                "app_errors": row.get("app_4xx", 0) + row.get("app_5xx", 0),
+                "server_errors": row.get("app_5xx", 0),
+            })
+        for burst in detect_error_bursts(site_series, start, end):
+            burst["site"] = site["name"]
+            burst["path"] = None
+            burst["value"] = burst["peak_errors"]
+            burst["previous"] = burst["baseline_average"]
+            burst["change"] = round(burst["peak_errors"] - burst["baseline_average"], 1)
+            burst["explanation"] = (
+                f"Application errors peaked at {burst['peak_errors']:,}; "
+                + (f"recovered on {burst['recovery_day']}." if burst["recovered"] else "recovery is not yet confirmed.")
+            )
+            error_bursts.append(burst)
+    incidents.extend(error_bursts)
+    incidents.sort(key=lambda item: (
+        {"error-burst": 0, "latency-regression": 1, "slow-page": 2, "size-anomaly": 3}.get(item["kind"], 9),
+        -abs(item.get("change") or 0), item["site"], item.get("path") or "",
+    ))
+    pages.sort(key=lambda item: (
+        -(item["p95_ms"] or -1), -item["requests"], item["site"], item["path"]
+    ))
+    actionable_error_paths = [
+        row for row in error_path_rows if not _is_probe_path(row["path"])
+    ]
+    probe_error_requests = sum(
+        row["requests"] for row in error_path_rows if _is_probe_path(row["path"])
+    )
+    summary["incidents"] = len(incidents)
+    if not summary["timed_requests"]:
+        narrative = (
+            "No request-timing samples exist in this window yet. Response-size and "
+            "error health remain available; latency begins when nginx's timed log format is enabled."
+        )
+    elif incidents:
+        narrative = (
+            f"Webstats found {len(incidents):,} reliability signal"
+            f"{'s' if len(incidents) != 1 else ''}. {summary['timing_coverage_percent']:g}% "
+            f"of successful human page responses carried timing telemetry; application "
+            f"errors totalled {summary['app_4xx'] + summary['app_5xx']:,}."
+        )
+    else:
+        narrative = (
+            f"No material latency, payload, or error regression was detected. "
+            f"Timing coverage is {summary['timing_coverage_percent']:g}% across "
+            f"{summary['requests']:,} successful human page responses."
+        )
+    return jsonify({
+        "from": start_text, "to": end_text,
+        "previous_from": prior_start.isoformat(),
+        "previous_to": prior_end.isoformat(),
+        "scope": {"site": selected_site["name"] if selected_site else None},
+        "privacy": {"protected": False},
+        "summary": summary, "previous": previous,
+        "series": series, "pages": pages[:limit],
+        "incidents": incidents[:limit],
+        "error_paths": actionable_error_paths[:25],
+        "probe_error_requests": probe_error_requests,
+        "narrative": narrative,
     })
 
 

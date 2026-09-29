@@ -47,6 +47,18 @@ class ParserTests(unittest.TestCase):
         line = (FIXTURES / "combined.log").read_text().splitlines()[0] + " 0.013"
         row = parse_line(line, compiled, "example.com", "secret")
         self.assertEqual(row.path, "/essays/hello")
+        self.assertEqual(row.request_time_ms, 13)
+
+    def test_host_format_accepts_timed_and_legacy_lines(self):
+        legacy = (FIXTURES / "combined_host.log").read_text().strip()
+        compiled = compile_log_format("combined_host")
+        self.assertIsNone(
+            parse_line(legacy, compiled, "example.com", "secret").request_time_ms
+        )
+        timed = parse_line(
+            legacy + " 1.247", compiled, "example.com", "secret"
+        )
+        self.assertEqual(timed.request_time_ms, 1247)
 
     def test_self_referral_is_removed(self):
         line = (

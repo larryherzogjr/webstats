@@ -54,6 +54,7 @@ class ParsedRequest:
     is_bot: int
     is_asset: int
     country: Optional[str]
+    request_time_ms: Optional[int]
 
 
 def daily_ip_hash(secret_key: str, day: str, remote_addr: str) -> str:
@@ -114,6 +115,16 @@ def parse_line(
     referrer = _dash_to_empty(fields.get("http_referer"))
     referrer_host = _referrer_host(referrer, normalized_host or site_name)
     byte_value = fields.get("body_bytes_sent") or fields.get("bytes_sent") or "0"
+    request_time_ms = None
+    request_time = fields.get("request_time")
+    if request_time:
+        try:
+            seconds = float(request_time)
+        except ValueError as exc:
+            raise ParseError("Invalid request time") from exc
+        if seconds < 0 or seconds > 86_400:
+            raise ParseError("Invalid request time")
+        request_time_ms = round(seconds * 1000)
     remote_addr = fields.get("remote_addr") or ""
     return ParsedRequest(
         host=normalized_host,
@@ -133,6 +144,7 @@ def parse_line(
         is_bot=int(is_bot),
         is_asset=int(path.lower().endswith(ASSET_EXTENSIONS)),
         country=country,
+        request_time_ms=request_time_ms,
     )
 
 

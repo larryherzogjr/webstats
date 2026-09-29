@@ -1532,6 +1532,103 @@
     } catch (error) { showError(error); }
   }
 
+  function latencyLabel(value) {
+    if (value === null || value === undefined) return "—";
+    if (value < 1000) return `${fmt.format(value)} ms`;
+    return `${(value / 1000).toFixed(value < 10000 ? 2 : 1)} s`;
+  }
+
+  function signedBytes(value) {
+    if (!value) return "0 B";
+    return `${value > 0 ? "+" : "−"}${compactBytes(Math.abs(value))}`;
+  }
+
+  function reliabilityIncidentCard(item, data) {
+    const pageHref = item.path
+      ? pageStoryHref(item, data.from, data.to)
+      : `/errors?${new URLSearchParams({ site: item.site, days: "30" })}`;
+    let value;
+    let comparison;
+    if (item.kind === "size-anomaly") {
+      value = compactBytes(item.value);
+      comparison = `${signedBytes(item.change)} vs before`;
+    } else if (item.kind === "error-burst") {
+      value = `${fmt.format(item.errors)} errors`;
+      comparison = item.recovered ? `Recovered ${item.recovery_day}` : "Recovery unresolved";
+    } else {
+      value = latencyLabel(item.value);
+      comparison = item.previous === null ? "No prior timing" : `${item.change > 0 ? "+" : ""}${latencyLabel(item.change)} vs before`;
+    }
+    const title = item.path || `${item.site} error burst`;
+    const dates = item.start ? `${item.start}${item.end !== item.start ? ` to ${item.end}` : ""}` : data.from;
+    return `<article class="reliability-incident ${escapeHtml(item.kind)}"><div class="reliability-incident-top"><span class="reliability-badge">${escapeHtml(episodeLabel(item.kind))}</span><strong>${escapeHtml(value)}</strong></div><a href="${escapeHtml(pageHref)}">${escapeHtml(title)}</a><small>${escapeHtml(item.site)} · ${escapeHtml(dates)}</small><p>${escapeHtml(item.explanation)}</p><span class="reliability-comparison">${escapeHtml(comparison)}</span></article>`;
+  }
+
+  async function loadReliability() {
+    clearError();
+    try {
+      const data = await api(`/api/reliability?${query({ limit: "100" })}`);
+      document.querySelector("#range-label").textContent = dateLabel(data.from, data.to);
+      document.querySelector("#reliability-comparison").textContent = `vs ${dateLabel(data.previous_from, data.previous_to)}`;
+      const summary = data.summary;
+      document.querySelector("#reliability-heading").textContent = summary.incidents
+        ? `${fmt.format(summary.incidents)} reliability signal${summary.incidents === 1 ? "" : "s"} to inspect`
+        : "No material regression detected";
+      document.querySelector("#reliability-narrative").textContent = data.narrative;
+      const privacy = document.querySelector("#reliability-privacy");
+      privacy.classList.toggle("hidden", !data.privacy.protected);
+      privacy.textContent = data.privacy.protected ? data.narrative : "";
+      document.querySelector("#timing-coverage").innerHTML = `<div><span style="width:${Math.min(100, summary.timing_coverage_percent)}%"></span></div><p><strong>${escapeHtml(`${summary.timing_coverage_percent}%`)}</strong> timing coverage · ${fmt.format(summary.timed_requests)} of ${fmt.format(summary.requests)} successful page responses</p>`;
+      document.querySelector("#reliability-metrics").innerHTML = [
+        metric("Average response", latencyLabel(summary.average_ms)),
+        metric("p95 response", latencyLabel(summary.p95_ms)),
+        metric("Slowest response", latencyLabel(summary.max_ms)),
+        metric("Average payload", compactBytes(summary.average_bytes)),
+        metric("Application 4xx", fmt.format(summary.app_4xx)),
+        metric("Application 5xx", fmt.format(summary.app_5xx)),
+        metric("Scanner requests", fmt.format(summary.scanner_requests)),
+        metric("Signals", fmt.format(summary.incidents)),
+      ].join("");
+      updateChart("reliability-latency", document.querySelector("#latency-chart"), {
+        type: "line",
+        data: {
+          labels: data.series.map(item => item.day),
+          datasets: [
+            { label: "p95 ms", data: data.series.map(item => item.p95_ms), borderColor: colors[3], backgroundColor: `${colors[3]}20`, tension: .25, fill: true },
+            { label: "Average ms", data: data.series.map(item => item.average_ms), borderColor: colors[0], backgroundColor: "transparent", tension: .25 },
+          ],
+        },
+        options: chartOptions,
+      });
+      updateChart("reliability-errors", document.querySelector("#reliability-error-chart"), {
+        type: "bar",
+        data: {
+          labels: data.series.map(item => item.day),
+          datasets: [
+            { label: "Application 4xx", data: data.series.map(item => item.app_4xx), backgroundColor: "rgba(245,198,107,.72)", stack: "application" },
+            { label: "Application 5xx", data: data.series.map(item => item.app_5xx), backgroundColor: "rgba(255,122,138,.8)", stack: "application" },
+            { label: "Scanner noise", data: data.series.map(item => item.scanner_requests), backgroundColor: "rgba(143,162,186,.32)", stack: "scanner" },
+          ],
+        },
+        options: chartOptions,
+      });
+      document.querySelector("#reliability-incidents").innerHTML = data.incidents.length
+        ? data.incidents.map(item => reliabilityIncidentCard(item, data)).join("")
+        : '<p class="empty">No latency regression, slow page, payload anomaly, or error burst crossed its evidence threshold.</p>';
+      document.querySelector("#reliability-pages").innerHTML = data.pages.length
+        ? data.pages.map(item => {
+          const href = pageStoryHref(item, data.from, data.to);
+          const change = item.latency_change_ms === null ? "—" : `${item.latency_change_ms > 0 ? "+" : ""}${latencyLabel(item.latency_change_ms)}`;
+          return `<tr><td><a class="table-link" href="${escapeHtml(href)}">${escapeHtml(item.path)}</a></td><td>${escapeHtml(item.site)}</td><td>${fmt.format(item.timed_requests)} / ${fmt.format(item.requests)}</td><td>${escapeHtml(latencyLabel(item.average_ms))}</td><td>${escapeHtml(latencyLabel(item.p95_ms))}</td><td>${escapeHtml(latencyLabel(item.previous_p95_ms))}</td><td>${escapeHtml(compactBytes(item.average_bytes))}</td><td class="${item.latency_change_ms > 0 ? "danger-text" : "change-up"}">${escapeHtml(change)}</td></tr>`;
+        }).join("")
+        : '<tr><td colspan="8" class="empty">No successful human page responses in this window.</td></tr>';
+      document.querySelector("#reliability-error-paths").innerHTML = data.error_paths.length
+        ? data.error_paths.map(item => `<tr><td><a class="table-link" href="${escapeHtml(pageStoryHref(item, data.from, data.to))}">${escapeHtml(item.path)}</a></td><td>${escapeHtml(item.site)}</td><td>${fmt.format(item.status)}</td><td>${fmt.format(item.requests)}</td></tr>`).join("")
+        : '<tr><td colspan="4" class="empty">No application error paths in this window.</td></tr>';
+      document.querySelector("#scanner-summary").textContent = `${fmt.format(summary.scanner_requests)} scanner requests kept separate · ${fmt.format(data.probe_error_requests)} human-classified probe errors`;
+    } catch (error) { showError(error); }
+  }
+
   async function loadAiPolicy() {
     clearError();
     try {
@@ -1698,6 +1795,11 @@
     setupFilters(loadEpisodes);
     setupSiteFilter(() => { syncUrl(); loadEpisodes(); });
     loadEpisodes();
+  }
+  if (page === "reliability") {
+    setupFilters(loadReliability);
+    setupSiteFilter(() => { syncUrl(); loadReliability(); });
+    loadReliability();
   }
   if (page === "content-observatory") {
     setupFilters(loadContentObservatory);

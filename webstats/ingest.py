@@ -108,6 +108,7 @@ def _record_tuple(source_key: str, site_id: int, row: ParsedRequest) -> tuple:
         row.is_bot,
         row.is_asset,
         row.country,
+        row.request_time_ms,
     )
 
 

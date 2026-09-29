@@ -1,0 +1,48 @@
+{% extends "base.html" %}
+{% block title %}Performance & Reliability | Webstats{% endblock %}
+{% block page_id %}reliability{% endblock %}
+{% block body_data %} data-default-days="30"{% endblock %}
+{% block content %}
+<div class="page-heading">
+  <div><p class="eyebrow">Speed, payload, failure, recovery</p><h1>Performance &amp; Reliability</h1></div>
+  <p id="range-label" class="range-label"></p>
+</div>
+{% include "_filters.html" %}
+<div id="page-error" class="alert hidden" role="alert"></div>
+<div id="reliability-privacy" class="alert hidden" role="status"></div>
+<section class="panel reliability-hero">
+  <div class="panel-heading">
+    <div><p class="eyebrow">Automatic reliability analysis</p><h2 id="reliability-heading">Measuring the serving path</h2></div>
+    <span id="reliability-comparison" class="legend-note"></span>
+  </div>
+  <p id="reliability-narrative" class="reliability-lead"></p>
+  <div id="timing-coverage" class="timing-coverage"></div>
+</section>
+<section id="reliability-metrics" class="metric-grid" aria-label="Reliability summary"></section>
+<div class="reliability-chart-grid">
+  <section class="panel">
+    <div class="panel-heading"><div><p class="eyebrow">Response time</p><h2>Latency envelope</h2></div><span class="legend-note">Successful human pages</span></div>
+    <div class="chart-wrap compact-chart"><canvas id="latency-chart"></canvas></div>
+  </section>
+  <section class="panel">
+    <div class="panel-heading"><div><p class="eyebrow">Failure boundary</p><h2>Application trouble vs scanner noise</h2></div><span class="legend-note">Probe traffic stays visible, but separate</span></div>
+    <div class="chart-wrap compact-chart"><canvas id="reliability-error-chart"></canvas></div>
+  </section>
+</div>
+<section class="panel reliability-incidents-panel">
+  <div class="panel-heading">
+    <div><p class="eyebrow">Needs attention</p><h2>Regressions, anomalies, and recovery</h2></div>
+    <span class="legend-note">Equal-window comparisons · adaptive error baseline</span>
+  </div>
+  <div id="reliability-incidents" class="reliability-incident-grid" aria-live="polite"></div>
+</section>
+<section class="panel">
+  <div class="panel-heading"><div><p class="eyebrow">Page performance</p><h2>Slowest successful responses</h2></div><span class="legend-note">p95 values combine sample-weighted daily percentiles</span></div>
+  <div class="table-wrap"><table><thead><tr><th>Page</th><th>Site</th><th>Samples</th><th>Average</th><th>p95</th><th>Previous p95</th><th>Average payload</th><th>Change</th></tr></thead><tbody id="reliability-pages"></tbody></table></div>
+</section>
+<section class="panel">
+  <div class="panel-heading"><div><p class="eyebrow">Application errors</p><h2>Paths behind the failures</h2></div><span id="scanner-summary" class="legend-note"></span></div>
+  <div class="table-wrap"><table><thead><tr><th>Path</th><th>Site</th><th>Status</th><th>Requests</th></tr></thead><tbody id="reliability-error-paths"></tbody></table></div>
+</section>
+<p class="muted methodology-note">Latency is nginx's total <code>$request_time</code>, measured from reading the first request byte through sending the response. Performance includes successful human, non-asset GET requests and excludes recognized probe paths. A latency regression requires at least three timed samples in each equal window, a 50% rise, and 100 ms of absolute movement. Payload anomalies require three responses in each window, 50% movement, and 25 KB. Application errors exclude recognized probe paths; scanner noise is reported separately. Historic latency begins when timed logging is deployed, while retained response sizes are rebuilt during migration.</p>
+{% endblock %}

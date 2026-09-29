@@ -45,6 +45,10 @@ log paths, retention, timezone, and log format all live in TOML configuration.
   related surge days, reconstruct the rise, peak, decay, and following week,
   and attribute the episode to pages, referrers, countries, recognized
   crawlers, errors, and Automatic Moments without manual annotations.
+- Performance & Reliability intelligence built from nginx request timing,
+  including slow pages, equal-window latency regressions, response-size
+  anomalies, application-error bursts and recovery, and a separate accounting
+  of recognized scanner noise.
 - A Content Observatory that discovers same-site HTTPS sitemaps automatically,
   identifies never-observed, crawler-only, quiet, and crawler-heavy pages,
   measures search and AI coverage, finds active pages outside the published
@@ -122,6 +126,14 @@ seven days, and the following week is classified as returned, sustained, or
 not yet resolved. Attribution is descriptive rather than causal. The feature
 uses existing permanent daily rollups and excludes privacy-protected sites.
 
+Performance timing uses nginx's `$request_time`, converted to milliseconds at
+ingest. The built-in `combined_host` parser accepts both the new timed suffix
+and legacy untimed lines, so current and rotated logs can coexist safely.
+Successful human, non-asset GET requests feed permanent daily latency and
+response-size summaries. Latency naturally begins after the timed nginx format
+is installed; migration rebuilds response-size and error history from retained
+raw rows. Performance details exclude privacy-protected sites.
+
 The AI Policy Observatory keeps no policy archive. It caches current public
 `robots.txt` responses in application memory for 15 minutes and compares those
 current rules with the selected historical traffic window. Its conflict label
@@ -198,6 +210,8 @@ string is also accepted. Required fields
 are `$remote_addr`, `$time_local`, `$status`, `$http_user_agent`, and either
 `$request` or both `$request_method` and `$request_uri`. Unknown variables are
 matched and ignored.
+The supplied production nginx formats append `$request_time`; legacy lines
+without that suffix remain parseable by `combined_host` during rotation.
 
 GeoIP is off by default. To enable it, install the optional dependency with
 `pip install '/opt/webstats[geoip]'`, place a MaxMind-compatible country database
@@ -261,7 +275,8 @@ access_log /var/log/nginx/webstats.access.log webstats_private_host;
 ```
 
 The private format uses `$uri`, not `$request_uri`, so query strings never reach
-the log. It also writes `-` instead of the referrer. Test before reloading:
+the log. It also writes `-` instead of the referrer. Both formats append only
+nginx's aggregate request duration. Test before reloading:
 
 ```sh
 sudo nginx -t
@@ -314,6 +329,7 @@ All routes require the admin session except `/api/health`:
 - `GET /api/briefing?week=YYYY-MM-DD` (the week must begin on Monday)
 - `GET /api/pulse?site=&limit=`
 - `GET /api/episodes?from=&to=&site=&limit=`
+- `GET /api/reliability?from=&to=&site=&limit=`
 - `GET /api/errors?site=&days=7|30|90&limit=`
 - `GET /api/journeys?from=&to=&site=`
 - `GET /api/link-atlas?from=&to=&site=&source=&limit=`

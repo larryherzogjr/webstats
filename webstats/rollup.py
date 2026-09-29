@@ -57,6 +57,7 @@ def recompute_day(conn: sqlite3.Connection, day: str) -> None:
         "daily_referrer", "daily_page_referrer", "daily_agent",
         "daily_page_agent", "daily_page_country", "daily_page_status",
         "daily_feed_reader", "daily_country", "daily_status", "daily_404",
+        "daily_performance", "daily_reliability",
         "daily_journey", "daily_journey_endpoint", "daily_journey_transition",
     )
     for table in tables:
@@ -198,9 +199,118 @@ def recompute_day(conn: sqlite3.Connection, day: str) -> None:
         """,
         (day,),
     )
+    _refresh_performance_for_day(conn, day)
     _refresh_feed_readers_for_day(conn, day)
     _refresh_journeys_for_day(conn, day)
     _refresh_events_for_day(conn, day)
+
+
+def _percentile(values: list[int], percentile: float) -> Optional[int]:
+    if not values:
+        return None
+    ordered = sorted(values)
+    index = max(0, min(len(ordered) - 1, int(len(ordered) * percentile + .999999) - 1))
+    return ordered[index]
+
+
+def _is_probe_path(path: str) -> bool:
+    lowered = path.lower()
+    return lowered in PROBE_PATHS or any(
+        lowered.startswith(prefix) for prefix in PROBE_PATH_PREFIXES
+    )
+
+
+def _refresh_performance_for_day(conn: sqlite3.Connection, day: str) -> None:
+    """Preserve daily latency, payload, application-error, and scanner signals."""
+    request_columns = {
+        row["name"] for row in conn.execute("PRAGMA table_info(requests)")
+    }
+    timing_select = (
+        "request_time_ms" if "request_time_ms" in request_columns
+        else "NULL AS request_time_ms"
+    )
+    page_groups: dict[tuple[int, str], dict[str, object]] = defaultdict(
+        lambda: {"times": [], "bytes": []}
+    )
+    site_groups: dict[int, dict[str, object]] = defaultdict(
+        lambda: {
+            "times": [], "bytes": [], "app_4xx": 0, "app_5xx": 0,
+            "scanner_requests": 0, "scanner_errors": 0,
+        }
+    )
+    for row in conn.execute(
+        f"""
+        SELECT site_id, path, method, status, bytes, {timing_select},
+               is_bot, is_asset
+        FROM requests WHERE day=?
+        """,
+        (day,),
+    ):
+        if row["is_asset"]:
+            continue
+        site = site_groups[row["site_id"]]
+        probe = _is_probe_path(row["path"])
+        if probe:
+            site["scanner_requests"] += 1
+            site["scanner_errors"] += int(row["status"] >= 400)
+        elif not row["is_bot"] and 400 <= row["status"] <= 499:
+            site["app_4xx"] += 1
+        elif not row["is_bot"] and 500 <= row["status"] <= 599:
+            site["app_5xx"] += 1
+        successful_page = (
+            not row["is_bot"] and row["method"] == "GET"
+            and 200 <= row["status"] <= 399 and not probe
+        )
+        if not successful_page:
+            continue
+        page = page_groups[(row["site_id"], row["path"])]
+        page["bytes"].append(row["bytes"])
+        site["bytes"].append(row["bytes"])
+        if row["request_time_ms"] is not None:
+            page["times"].append(row["request_time_ms"])
+            site["times"].append(row["request_time_ms"])
+
+    page_rows = []
+    for (site_id, path), group in page_groups.items():
+        times = group["times"]
+        sizes = group["bytes"]
+        page_rows.append((
+            site_id, day, path, len(sizes), len(times), sum(times),
+            _percentile(times, .50), _percentile(times, .95),
+            max(times) if times else None, sum(sizes),
+            round(sum(sizes) / len(sizes)), max(sizes),
+        ))
+    conn.executemany(
+        """
+        INSERT INTO daily_performance(
+            site_id, day, path, requests, timed_requests, total_ms,
+            p50_ms, p95_ms, max_ms, total_bytes, avg_bytes, max_bytes
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        page_rows,
+    )
+    site_rows = []
+    for site_id, group in site_groups.items():
+        times = group["times"]
+        sizes = group["bytes"]
+        site_rows.append((
+            site_id, day, len(sizes), len(times), sum(times),
+            _percentile(times, .50), _percentile(times, .95),
+            max(times) if times else None, sum(sizes),
+            round(sum(sizes) / len(sizes)) if sizes else 0,
+            max(sizes) if sizes else 0, group["app_4xx"], group["app_5xx"],
+            group["scanner_requests"], group["scanner_errors"],
+        ))
+    conn.executemany(
+        """
+        INSERT INTO daily_reliability(
+            site_id, day, requests, timed_requests, total_ms,
+            p50_ms, p95_ms, max_ms, total_bytes, avg_bytes, max_bytes,
+            app_4xx, app_5xx, scanner_requests, scanner_errors
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        site_rows,
+    )
 
 
 def _refresh_journeys_for_day(conn: sqlite3.Connection, day: str) -> None:

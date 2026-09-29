@@ -36,14 +36,44 @@ class DatabaseMigrationTests(unittest.TestCase):
                 }
             self.assertEqual(version, SCHEMA_VERSION)
             self.assertIn("source_fingerprint", columns)
+            self.assertIn("request_time_ms", columns)
             self.assertTrue(
                 {
                     "daily_page_referrer", "daily_page_agent",
                     "daily_page_country", "daily_page_status",
                     "daily_feed_reader", "daily_journey",
                     "daily_journey_endpoint", "daily_journey_transition", "events",
+                    "daily_performance", "daily_reliability",
                 } <= tables
             )
+
+    def test_version_six_adds_request_timing_and_performance_rollups(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            with connect(root / "test.db") as conn:
+                for statement in SCHEMA.split(";"):
+                    if statement.strip():
+                        conn.execute(statement)
+                conn.execute("DELETE FROM schema_version")
+                conn.execute("INSERT INTO schema_version VALUES (6)")
+                conn.execute("DROP TABLE daily_performance")
+                conn.execute("DROP TABLE daily_reliability")
+                conn.commit()
+                initialize(conn, self.config(root))
+                columns = {
+                    row["name"] for row in conn.execute("PRAGMA table_info(requests)")
+                }
+                tables = {
+                    row["name"] for row in conn.execute(
+                        "SELECT name FROM sqlite_master WHERE type='table'"
+                    )
+                }
+                version = conn.execute(
+                    "SELECT version FROM schema_version"
+                ).fetchone()[0]
+            self.assertEqual(version, SCHEMA_VERSION)
+            self.assertIn("request_time_ms", columns)
+            self.assertTrue({"daily_performance", "daily_reliability"} <= tables)
 
     def test_version_one_database_is_migrated_in_place(self):
         with tempfile.TemporaryDirectory() as temp:

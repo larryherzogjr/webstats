@@ -46,6 +46,38 @@ class RollupTests(unittest.TestCase):
         second = tuple(self.conn.execute("SELECT * FROM daily_site").fetchone())
         self.assertEqual(first, second)
 
+    def test_performance_rollup_separates_application_health_from_probes(self):
+        site_id = site_id_map(self.conn)["example.com"]
+        observations = (
+            ("/essay", 200, 1000, 100),
+            ("/essay", 200, 3000, 300),
+            ("/essay", 200, 5000, 900),
+            ("/missing", 404, 100, 20),
+            ("/broken", 500, 200, 80),
+            ("/.env", 404, 50, 10),
+        )
+        rows = []
+        for index, (path, status, size, timing) in enumerate(observations):
+            rows.append((
+                f"performance-{index}", f"performance-fingerprint-{index}",
+                site_id, index + 1, "2026-09-28", f"visitor-{index}", "GET",
+                path, None, status, size, None, None, "Mozilla/5.0",
+                "Other browser", "Other", 0, 0, None, timing,
+            ))
+        insert_requests(self.conn, rows)
+        recompute_day(self.conn, "2026-09-28")
+
+        page = self.conn.execute(
+            "SELECT requests, timed_requests, p50_ms, p95_ms, max_ms, "
+            "avg_bytes, max_bytes FROM daily_performance WHERE path='/essay'"
+        ).fetchone()
+        self.assertEqual(tuple(page), (3, 3, 300, 900, 900, 3000, 5000))
+        site = self.conn.execute(
+            "SELECT app_4xx, app_5xx, scanner_requests, scanner_errors "
+            "FROM daily_reliability"
+        ).fetchone()
+        self.assertEqual(tuple(site), (1, 1, 1, 1))
+
     def test_journeys_collapse_refreshes_split_sessions_and_ignore_noise(self):
         site_id = site_id_map(self.conn)["example.com"]
         rows = []

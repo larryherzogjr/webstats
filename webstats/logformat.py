@@ -55,7 +55,11 @@ def expand_format(value: str) -> str:
 
 
 def compile_log_format(value: str) -> CompiledLogFormat:
+    normalized = value.strip()
     source = expand_format(value)
+    optional_request_time = normalized in {
+        "combined_host", "host_combined", "combined with $host prefix",
+    }
     pieces = []
     position = 0
     seen = set()
@@ -73,6 +77,11 @@ def compile_log_format(value: str) -> CompiledLogFormat:
             seen.add(name)
         position = match.end()
     pieces.append(re.escape(source[position:]))
+    if optional_request_time and "request_time" not in seen:
+        # Production appends nginx's request time to the shared host-prefixed
+        # format. Keeping the suffix optional lets the same parser consume old
+        # rotated logs during and after the rollout.
+        pieces.append(r"(?: (?P<request_time>[\d.]+))?")
     required = {"remote_addr", "time_local", "status", "http_user_agent"}
     if not required.issubset(seen):
         missing = ", ".join(f"${name}" for name in sorted(required - seen))
@@ -84,4 +93,3 @@ def compile_log_format(value: str) -> CompiledLogFormat:
 
 def _inside_quotes(source: str, position: int) -> bool:
     return source[:position].count('"') % 2 == 1
-

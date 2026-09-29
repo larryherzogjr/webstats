@@ -41,6 +41,14 @@ class DeploymentConfigTests(unittest.TestCase):
         self.assertIn("$uri", private_format)
         self.assertNotIn("$request_uri", private_format)
         self.assertNotIn("$http_referer", private_format)
+        self.assertIn("$request_time", private_format)
+
+    def test_shared_format_records_request_time(self):
+        text = (ROOT / "deploy/nginx-webstats-log.conf").read_text(encoding="utf-8")
+        shared_format = re.search(
+            r"log_format webstats_combined_host(?P<body>.*?);", text, re.DOTALL
+        ).group("body")
+        self.assertIn("$request_time", shared_format)
 
     def test_app_config_includes_ad_fontes_and_excludes_private_apps(self):
         text = (ROOT / "config.example.toml").read_text(encoding="utf-8")

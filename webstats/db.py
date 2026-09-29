@@ -10,7 +10,7 @@ from .bots import classify_user_agent
 from .config import Config
 
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -40,7 +40,8 @@ CREATE TABLE IF NOT EXISTS requests (
     os_family TEXT NOT NULL,
     is_bot INTEGER NOT NULL DEFAULT 0 CHECK (is_bot IN (0, 1)),
     is_asset INTEGER NOT NULL DEFAULT 0 CHECK (is_asset IN (0, 1)),
-    country TEXT
+    country TEXT,
+    request_time_ms INTEGER
 );
 CREATE INDEX IF NOT EXISTS requests_site_ts ON requests(site_id, ts);
 CREATE INDEX IF NOT EXISTS requests_site_path ON requests(site_id, path);
@@ -167,6 +168,27 @@ CREATE TABLE IF NOT EXISTS daily_404 (
     human_nonasset_requests INTEGER NOT NULL,
     PRIMARY KEY(site_id, day, path)
 );
+CREATE TABLE IF NOT EXISTS daily_performance (
+    site_id INTEGER NOT NULL REFERENCES sites(id), day TEXT NOT NULL,
+    path TEXT NOT NULL, requests INTEGER NOT NULL,
+    timed_requests INTEGER NOT NULL, total_ms INTEGER NOT NULL,
+    p50_ms INTEGER, p95_ms INTEGER, max_ms INTEGER,
+    total_bytes INTEGER NOT NULL, avg_bytes INTEGER NOT NULL,
+    max_bytes INTEGER NOT NULL,
+    PRIMARY KEY(site_id, day, path)
+);
+CREATE INDEX IF NOT EXISTS daily_performance_day
+    ON daily_performance(day, site_id);
+CREATE TABLE IF NOT EXISTS daily_reliability (
+    site_id INTEGER NOT NULL REFERENCES sites(id), day TEXT NOT NULL,
+    requests INTEGER NOT NULL, timed_requests INTEGER NOT NULL,
+    total_ms INTEGER NOT NULL, p50_ms INTEGER, p95_ms INTEGER, max_ms INTEGER,
+    total_bytes INTEGER NOT NULL, avg_bytes INTEGER NOT NULL,
+    max_bytes INTEGER NOT NULL, app_4xx INTEGER NOT NULL,
+    app_5xx INTEGER NOT NULL, scanner_requests INTEGER NOT NULL,
+    scanner_errors INTEGER NOT NULL,
+    PRIMARY KEY(site_id, day)
+);
 CREATE TABLE IF NOT EXISTS daily_journey (
     site_id INTEGER NOT NULL REFERENCES sites(id), day TEXT NOT NULL,
     sessions INTEGER NOT NULL, pageviews INTEGER NOT NULL,
@@ -284,12 +306,23 @@ def _migrate_5_to_6(conn: sqlite3.Connection) -> None:
     _recompute_retained_days(conn)
 
 
+def _migrate_6_to_7(conn: sqlite3.Connection) -> None:
+    columns = {row["name"] for row in conn.execute("PRAGMA table_info(requests)")}
+    if "request_time_ms" not in columns:
+        conn.execute("ALTER TABLE requests ADD COLUMN request_time_ms INTEGER")
+    _execute_schema(conn)
+    # Existing retained rows do not contain latency, but rebuilding immediately
+    # preserves their response-size and reliability history.
+    _recompute_retained_days(conn)
+
+
 MIGRATIONS = {
     1: _migrate_1_to_2,
     2: _migrate_2_to_3,
     3: _migrate_3_to_4,
     4: _migrate_4_to_5,
     5: _migrate_5_to_6,
+    6: _migrate_6_to_7,
 }
 
 
@@ -345,15 +378,16 @@ def site_id_map(conn: sqlite3.Connection) -> dict[str, int]:
 
 
 def insert_requests(conn: sqlite3.Connection, rows: Iterable[tuple]) -> int:
+    normalized = [(*row, None) if len(row) == 19 else row for row in rows]
     before = conn.total_changes
     conn.executemany(
         """
         INSERT OR IGNORE INTO requests(
             source_key, source_fingerprint, site_id, ts, day, ip_hash, method,
             path, query, status, bytes, referrer_host, referrer, user_agent,
-            ua_family, os_family, is_bot, is_asset, country
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ua_family, os_family, is_bot, is_asset, country, request_time_ms
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
-        rows,
+        normalized,
     )
     return conn.total_changes - before

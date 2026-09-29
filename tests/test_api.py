@@ -91,6 +91,7 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(self.client.get("/changes").status_code, 200)
         self.assertEqual(self.client.get("/content").status_code, 200)
         self.assertEqual(self.client.get("/episodes").status_code, 200)
+        self.assertEqual(self.client.get("/reliability").status_code, 200)
         self.assertEqual(self.client.get("/pulse").status_code, 200)
         self.assertEqual(self.client.get("/errors").status_code, 200)
         self.assertEqual(self.client.get("/journeys").status_code, 200)
@@ -1114,6 +1115,86 @@ Disallow: /blocked
         ).get_json()
         self.assertTrue(private["privacy"]["protected"])
         self.assertEqual(private["episodes"], [])
+
+    def test_reliability_detects_regressions_bursts_and_scanner_noise(self):
+        with connect(self.config.storage.db_path) as conn:
+            site_id = site_id_map(conn)["example.com"]
+            first = datetime(2026, 8, 23).date()
+            baseline = []
+            for offset in range(28):
+                day = (first + timedelta(days=offset)).isoformat()
+                baseline.append((
+                    site_id, day, 2, 2, 200, 100, 100, 100,
+                    2000, 1000, 1000, 0, 0, 1, 1,
+                ))
+            baseline.extend((
+                (site_id, "2026-09-20", 6, 6, 4800, 400, 900, 1200,
+                 600000, 100000, 140000, 4, 1, 9, 9),
+                (site_id, "2026-09-21", 4, 4, 2400, 350, 700, 800,
+                 400000, 100000, 120000, 3, 0, 5, 5),
+                (site_id, "2026-09-22", 2, 2, 400, 150, 200, 220,
+                 60000, 30000, 35000, 0, 0, 1, 1),
+            ))
+            conn.executemany(
+                """
+                INSERT INTO daily_reliability(
+                    site_id, day, requests, timed_requests, total_ms,
+                    p50_ms, p95_ms, max_ms, total_bytes, avg_bytes,
+                    max_bytes, app_4xx, app_5xx, scanner_requests, scanner_errors
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                baseline,
+            )
+            conn.executemany(
+                """
+                INSERT INTO daily_performance(
+                    site_id, day, path, requests, timed_requests, total_ms,
+                    p50_ms, p95_ms, max_ms, total_bytes, avg_bytes, max_bytes
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    (site_id, "2026-09-17", "/slow", 3, 3, 450, 120, 200, 220,
+                     90000, 30000, 31000),
+                    (site_id, "2026-09-20", "/slow", 3, 3, 2400, 400, 900, 1200,
+                     300000, 100000, 140000),
+                ),
+            )
+            conn.executemany(
+                """
+                INSERT INTO daily_page_status(
+                    site_id, day, path, status, requests, human_requests,
+                    nonasset_requests, human_nonasset_requests
+                ) VALUES (?, '2026-09-20', ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    (site_id, "/broken", 500, 4, 4, 4, 4),
+                    (site_id, "/.env", 404, 9, 9, 9, 9),
+                ),
+            )
+            conn.execute("INSERT INTO sites(name) VALUES ('ad-fontes.app')")
+            conn.commit()
+        self.authenticate()
+
+        response = self.client.get(
+            "/api/reliability?from=2026-09-20&to=2026-09-22&site=example.com"
+        )
+        self.assertEqual(response.status_code, 200)
+        body = response.get_json()
+        self.assertEqual(body["summary"]["app_5xx"], 1)
+        self.assertEqual(body["summary"]["scanner_requests"], 15)
+        kinds = {item["kind"] for item in body["incidents"]}
+        self.assertIn("error-burst", kinds)
+        self.assertIn("latency-regression", kinds)
+        self.assertIn("size-anomaly", kinds)
+        self.assertEqual(body["error_paths"][0]["path"], "/broken")
+        self.assertEqual(body["probe_error_requests"], 9)
+        self.assertEqual(body["pages"][0]["path"], "/slow")
+
+        private = self.client.get(
+            "/api/reliability?site=ad-fontes.app"
+        ).get_json()
+        self.assertTrue(private["privacy"]["protected"])
+        self.assertEqual(private["incidents"], [])
 
     def test_almanac_records_streaks_milestones_and_calendar(self):
         with connect(self.config.storage.db_path) as conn:
