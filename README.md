@@ -39,12 +39,16 @@ log paths, retention, timezone, and log format all live in TOML configuration.
 - Error Intelligence that separates known probe noise from human 404s, flags
   regressions and persistent misses, and suggests likely intended paths for
   typo-shaped requests without changing the underlying traffic history.
+- Reading Paths that infer anonymous 30-minute visits, entrances, exits,
+  visit depth, and page-to-page transitions. Consecutive refreshes collapse,
+  only daily aggregates persist, and privacy-protected sites are never
+  processed into journey data.
 - Clickable per-page stories with permanent daily history, lifetime first and
   last sightings, referrers, AI readers, countries, and response codes.
 - Idempotent daily rollups retained after raw request pruning.
 - Authenticated JSON APIs and responsive server-rendered pages.
 - Bookmarkable all-site or single-site scopes across Live Radar, Weekly
-  Briefings, AI Crawlers, Feeds, and the Traffic Almanac.
+  Briefings, AI Crawlers, Feeds, Reading Paths, and the Traffic Almanac.
 - Zero-filled daily charts, automatic hourly charts for retained one-day raw
   data, daily fallback for older dates, and bookmarkable date and traffic
   filters.
@@ -72,6 +76,9 @@ subscriber growth.
 The Live Radar always excludes `ad-fontes.app` from individual activity and
 country results at the API layer. Its aggregate request, visitor, and bandwidth
 totals remain available without exposing paths, timestamps, or geography.
+Reading Paths applies the same boundary earlier: `ad-fontes.app` requests are
+excluded while daily journey rollups are built, so no visit sequence or
+transition for that site is stored or returned.
 
 ## Fresh installation in 14 steps
 
@@ -248,6 +255,7 @@ All routes require the admin session except `/api/health`:
 - `GET /api/briefing?week=YYYY-MM-DD` (the week must begin on Monday)
 - `GET /api/pulse?site=&limit=`
 - `GET /api/errors?site=&days=7|30|90&limit=`
+- `GET /api/journeys?from=&to=&site=`
 - `GET /api/live?minutes=60&limit=40`
 - `GET /api/health`
 

@@ -228,6 +228,16 @@ footer { color: #60748e; text-align: center; padding: 0 20px 40px; font-size: 11
 .error-badge.new { color: #bdf7ff; border-color: rgba(103, 232, 249, .34); background: rgba(103, 232, 249, .09); }
 .error-suggestion { display: block; margin-top: -3px; color: var(--warning); font-size: 11px; text-decoration: none; overflow-wrap: anywhere; }
 .error-suggestion:hover { text-decoration: underline; text-underline-offset: 3px; }
+.journey-flow-panel { border-color: rgba(167, 139, 250, .23); }
+.journey-flow { display: grid; gap: 8px; }
+.journey-transition { display: grid; grid-template-columns: minmax(0, 1fr) 28px minmax(0, 1fr) auto; align-items: center; gap: 9px; padding: 12px 14px; border: 1px solid rgba(143, 162, 186, .13); border-radius: 12px; background: rgba(8, 16, 29, .28); }
+.journey-transition a { color: var(--text); font-size: 12px; font-weight: 650; text-decoration: none; overflow-wrap: anywhere; }
+.journey-transition a:hover { color: var(--accent); }
+.journey-transition strong { min-width: 32px; color: var(--accent); text-align: right; }
+.journey-transition small { grid-column: 1 / 4; color: var(--muted); font-size: 9px; }
+.journey-arrow { color: #a78bfa; font-size: 20px; text-align: center; }
+.journey-page-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 24px; }
+.journey-page-grid h3 { margin: 0 0 10px; color: var(--muted); font-size: 11px; letter-spacing: .08em; text-transform: uppercase; }
 
 .login-page { display: grid; place-items: center; padding: 24px; }
 .login-card { width: min(420px, 100%); padding: 38px; background: rgba(16, 26, 42, .96); border: 1px solid var(--border); border-radius: 22px; box-shadow: var(--shadow); }
@@ -253,6 +263,7 @@ footer { color: #60748e; text-align: center; padding: 0 20px 40px; font-size: 11
   .live-layout { grid-template-columns: 1fr; }
   .briefing-facts { grid-template-columns: 1fr; }
   .pulse-preview-grid { grid-template-columns: 1fr; }
+  .journey-page-grid { grid-template-columns: 1fr; }
 }
 
 @media (max-width: 520px) {

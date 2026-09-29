@@ -90,6 +90,7 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(self.client.get("/briefings").status_code, 200)
         self.assertEqual(self.client.get("/pulse").status_code, 200)
         self.assertEqual(self.client.get("/errors").status_code, 200)
+        self.assertEqual(self.client.get("/journeys").status_code, 200)
         self.assertEqual(self.client.get("/feed-readers").status_code, 200)
         self.assertEqual(self.client.get("/ai-crawlers").status_code, 200)
         self.assertEqual(self.client.get("/live").status_code, 200)
@@ -866,6 +867,61 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(body["probes"][0]["path"], "/.env")
         self.assertEqual(body["window"]["days"], 30)
         self.assertEqual(scoped.get_json()["scope"], {"site": "example.com"})
+        self.assertEqual(unknown.status_code, 404)
+
+    def test_reading_paths_and_page_transitions(self):
+        with connect(self.config.storage.db_path) as conn:
+            site_id = site_id_map(conn)["example.com"]
+            rows = []
+            for index, path in enumerate(("/one", "/two", "/three")):
+                rows.append((
+                    f"path-source-{index}", f"path-fingerprint-{index}",
+                    site_id, 1790586900 + index * 60, "2026-09-28",
+                    "journey-reader", "GET", path, None, 200, 10, None,
+                    None, "Mozilla/5.0", "Other browser", "Other", 0, 0, "US",
+                ))
+            insert_requests(conn, rows)
+            conn.execute("INSERT INTO sites(name) VALUES ('ad-fontes.app')")
+            private_id = site_id_map(conn)["ad-fontes.app"]
+            insert_requests(conn, [
+                (
+                    "private-path-source", "private-path-fingerprint", private_id,
+                    1790586900, "2026-09-28", "private-reader", "GET",
+                    "/private", None, 200, 10, None, None, "Mozilla/5.0",
+                    "Other browser", "Other", 0, 0, None,
+                )
+            ])
+            recompute_day(conn, "2026-09-28")
+            conn.commit()
+        self.authenticate()
+
+        response = self.client.get(
+            "/api/journeys?from=2026-09-28&to=2026-09-28&site=example.com"
+        )
+        private = self.client.get(
+            "/api/journeys?from=2026-09-28&to=2026-09-28&site=ad-fontes.app"
+        )
+        unknown = self.client.get("/api/journeys?site=unknown.example")
+        page = self.client.get(
+            "/api/site/example.com/page?from=2026-09-28&to=2026-09-28"
+            "&path=/one"
+        )
+
+        self.assertEqual(response.status_code, 200)
+        body = response.get_json()
+        self.assertEqual(body["scope"], {"site": "example.com"})
+        self.assertEqual(body["totals"]["sessions"], 2)
+        self.assertEqual(body["totals"]["multi_page_sessions"], 1)
+        self.assertEqual(body["totals"]["average_depth"], 2.0)
+        self.assertEqual(
+            [(row["from_path"], row["to_path"]) for row in body["transitions"]],
+            [("/one", "/two"), ("/two", "/three")],
+        )
+        page_journey = page.get_json()["journey"]
+        self.assertEqual(page_journey["entrances"], 2)
+        self.assertEqual(page_journey["next"][0]["path"], "/two")
+        self.assertTrue(private.get_json()["privacy"]["protected"])
+        self.assertEqual(private.get_json()["totals"]["sessions"], 0)
         self.assertEqual(unknown.status_code, 404)
 
     def test_invalid_range_is_rejected(self):

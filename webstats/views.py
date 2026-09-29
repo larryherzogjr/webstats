@@ -107,6 +107,15 @@ def errors():
     return render_template("errors.html", server_today=_server_today())
 
 
+@views_bp.get("/journeys")
+@login_required
+def journeys():
+    return render_template(
+        "journeys.html", server_today=_server_today(), force_bots=True,
+        hide_assets=True, site_filter=True,
+    )
+
+
 @views_bp.get("/health")
 @login_required
 def health():

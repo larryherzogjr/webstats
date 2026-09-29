@@ -673,6 +673,75 @@
         { key: "status" },
         { key: "requests", format: fmt.format },
       ], "No responses for this page in this range.");
+      const journey = data.journey;
+      document.querySelector("#page-journey-totals").textContent = journey.protected
+        ? "Not collected for this privacy-protected site"
+        : `${fmt.format(journey.entrances)} entrances · ${fmt.format(journey.exits)} exits`;
+      const journeyPath = value => `<a class="table-link" href="/site/${encodeURIComponent(site)}/page?${new URLSearchParams({ ...range, bots: "0", assets: "0", path: value })}">${escapeHtml(value)}</a>`;
+      fillTable("#page-journey-previous", journey.previous, [
+        { key: "path", format: journeyPath },
+        { key: "transitions", format: fmt.format },
+      ], journey.protected ? "Journey data is not collected for this site." : "No preceding page observed in this range.");
+      fillTable("#page-journey-next", journey.next, [
+        { key: "path", format: journeyPath },
+        { key: "transitions", format: fmt.format },
+      ], journey.protected ? "Journey data is not collected for this site." : "No following page observed in this range.");
+    } catch (error) { showError(error); }
+  }
+
+  function durationLabel(seconds) {
+    if (!seconds) return "0s";
+    if (seconds < 60) return `${seconds}s`;
+    const minutes = Math.floor(seconds / 60);
+    const remainder = seconds % 60;
+    return remainder ? `${minutes}m ${remainder}s` : `${minutes}m`;
+  }
+
+  async function loadJourneys() {
+    clearError();
+    try {
+      const data = await api(`/api/journeys?${query()}`);
+      document.querySelector("#range-label").textContent = dateLabel(data.from, data.to);
+      const privacy = document.querySelector("#journey-privacy");
+      privacy.classList.toggle("hidden", !data.privacy.protected);
+      privacy.textContent = data.privacy.protected
+        ? `${data.scope.site} is privacy-protected. Reading Paths never processes or stores its visit sequences.`
+        : "";
+      document.querySelector("#journey-metrics").innerHTML = [
+        metric("Inferred visits", fmt.format(data.totals.sessions)),
+        metric("Average depth", `${fmt.format(data.totals.average_depth)} pages`),
+        metric("Multi-page visits", `${data.totals.multi_page_rate}%`),
+        metric("Average observed span", durationLabel(data.totals.average_duration_seconds)),
+      ].join("");
+      updateChart("journeys", document.querySelector("#journey-chart"), {
+        type: "line",
+        data: {
+          labels: data.series.map(row => row.bucket),
+          datasets: [
+            { label: "Inferred visits", data: data.series.map(row => row.sessions), borderColor: colors[0], backgroundColor: `${colors[0]}22`, tension: .3, fill: true },
+            { label: "Multi-page visits", data: data.series.map(row => row.multi_page_sessions), borderColor: colors[2], backgroundColor: "transparent", tension: .3 },
+          ],
+        },
+        options: chartOptions,
+      });
+      const flow = document.querySelector("#journey-transitions");
+      flow.innerHTML = data.transitions.length ? data.transitions.map(item => {
+        const from = pageStoryHref({ site: item.site, path: item.from_path }, data.from, data.to);
+        const to = pageStoryHref({ site: item.site, path: item.to_path }, data.from, data.to);
+        return `<article class="journey-transition"><a href="${escapeHtml(from)}">${escapeHtml(item.from_path)}</a><span class="journey-arrow" aria-label="then">→</span><a href="${escapeHtml(to)}">${escapeHtml(item.to_path)}</a><strong>${fmt.format(item.transitions)}</strong><small>${escapeHtml(item.site)}</small></article>`;
+      }).join("") : '<p class="empty">No multi-page reading paths were inferred in this range.</p>';
+      const pageLink = (value, item) => `<a class="table-link" href="${escapeHtml(pageStoryHref({ site: item.site, path: value }, data.from, data.to))}">${escapeHtml(value)}</a>`;
+      fillTable("#journey-entrances", data.entrances, [
+        { key: "path", format: pageLink },
+        { key: "site" },
+        { key: "visits", format: fmt.format },
+        { key: "single_page_visits", format: fmt.format },
+      ], "No inferred entrances in this range.");
+      fillTable("#journey-exits", data.exits, [
+        { key: "path", format: pageLink },
+        { key: "site" },
+        { key: "visits", format: fmt.format },
+      ], "No inferred exits in this range.");
     } catch (error) { showError(error); }
   }
 
@@ -1058,5 +1127,10 @@
     loadPulse();
   }
   if (page === "errors") { setupErrors(); loadErrors(); }
+  if (page === "journeys") {
+    setupFilters(loadJourneys);
+    setupSiteFilter(() => { syncUrl(); loadJourneys(); });
+    loadJourneys();
+  }
   if (page === "health") loadHealth();
 })();

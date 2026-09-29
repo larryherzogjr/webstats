@@ -10,7 +10,7 @@ from .bots import classify_user_agent
 from .config import Config
 
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -167,6 +167,26 @@ CREATE TABLE IF NOT EXISTS daily_404 (
     human_nonasset_requests INTEGER NOT NULL,
     PRIMARY KEY(site_id, day, path)
 );
+CREATE TABLE IF NOT EXISTS daily_journey (
+    site_id INTEGER NOT NULL REFERENCES sites(id), day TEXT NOT NULL,
+    sessions INTEGER NOT NULL, pageviews INTEGER NOT NULL,
+    path_steps INTEGER NOT NULL, single_page_sessions INTEGER NOT NULL,
+    multi_page_sessions INTEGER NOT NULL, max_depth INTEGER NOT NULL,
+    duration_seconds INTEGER NOT NULL,
+    PRIMARY KEY(site_id, day)
+);
+CREATE TABLE IF NOT EXISTS daily_journey_endpoint (
+    site_id INTEGER NOT NULL REFERENCES sites(id), day TEXT NOT NULL,
+    path TEXT NOT NULL, entrances INTEGER NOT NULL, exits INTEGER NOT NULL,
+    single_page_sessions INTEGER NOT NULL,
+    PRIMARY KEY(site_id, day, path)
+);
+CREATE TABLE IF NOT EXISTS daily_journey_transition (
+    site_id INTEGER NOT NULL REFERENCES sites(id), day TEXT NOT NULL,
+    from_path TEXT NOT NULL, to_path TEXT NOT NULL,
+    transitions INTEGER NOT NULL,
+    PRIMARY KEY(site_id, day, from_path, to_path)
+);
 CREATE TABLE IF NOT EXISTS events (
     id INTEGER PRIMARY KEY,
     site_id INTEGER NOT NULL REFERENCES sites(id),
@@ -259,11 +279,17 @@ def _migrate_4_to_5(conn: sqlite3.Connection) -> None:
     _recompute_retained_days(conn)
 
 
+def _migrate_5_to_6(conn: sqlite3.Connection) -> None:
+    _execute_schema(conn)
+    _recompute_retained_days(conn)
+
+
 MIGRATIONS = {
     1: _migrate_1_to_2,
     2: _migrate_2_to_3,
     3: _migrate_3_to_4,
     4: _migrate_4_to_5,
+    5: _migrate_5_to_6,
 }
 
 

@@ -40,7 +40,8 @@ class DatabaseMigrationTests(unittest.TestCase):
                 {
                     "daily_page_referrer", "daily_page_agent",
                     "daily_page_country", "daily_page_status",
-                    "daily_feed_reader", "events",
+                    "daily_feed_reader", "daily_journey",
+                    "daily_journey_endpoint", "daily_journey_transition", "events",
                 } <= tables
             )
 
@@ -121,6 +122,48 @@ class DatabaseMigrationTests(unittest.TestCase):
                 conn.commit()
                 with self.assertRaises(RuntimeError):
                     initialize(conn, self.config(root))
+
+    def test_version_five_builds_journeys_from_retained_rows(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            with connect(root / "test.db") as conn:
+                for statement in SCHEMA.split(";"):
+                    if statement.strip():
+                        conn.execute(statement)
+                conn.execute("DELETE FROM schema_version")
+                conn.execute("INSERT INTO schema_version VALUES (5)")
+                conn.execute("INSERT INTO sites(id, name) VALUES (1, 'example.com')")
+                for table in (
+                    "daily_journey", "daily_journey_endpoint",
+                    "daily_journey_transition",
+                ):
+                    conn.execute(f"DROP TABLE {table}")
+                for index, path in enumerate(("/start", "/next")):
+                    conn.execute(
+                        """
+                        INSERT INTO requests(
+                            source_key, source_fingerprint, site_id, ts, day,
+                            ip_hash, method, path, status, bytes, user_agent,
+                            ua_family, os_family, is_bot, is_asset
+                        ) VALUES (?, ?, 1, ?, '2026-09-28', 'reader', 'GET', ?,
+                                  200, 10, 'Mozilla/5.0', 'Other browser',
+                                  'Other', 0, 0)
+                        """,
+                        (f"source-{index}", f"fingerprint-{index}", index + 1, path),
+                    )
+                conn.commit()
+
+                initialize(conn, self.config(root))
+                version = conn.execute(
+                    "SELECT version FROM schema_version"
+                ).fetchone()[0]
+                transition = conn.execute(
+                    "SELECT from_path, to_path, transitions "
+                    "FROM daily_journey_transition"
+                ).fetchone()
+
+            self.assertEqual(version, SCHEMA_VERSION)
+            self.assertEqual(tuple(transition), ("/start", "/next", 1))
 
     def test_version_four_reclassifies_and_rolls_up_feed_readers(self):
         with tempfile.TemporaryDirectory() as temp:

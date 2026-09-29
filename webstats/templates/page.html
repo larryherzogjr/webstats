@@ -15,6 +15,16 @@
   <div class="chart-wrap"><canvas id="page-chart"></canvas></div>
 </section>
 <div class="detail-grid">
+  <section id="page-journey-panel" class="panel span-two">
+    <div class="panel-heading">
+      <div><p class="eyebrow">Reading Paths</p><h2>How readers reached and left this page</h2></div>
+      <span id="page-journey-totals" class="legend-note"></span>
+    </div>
+    <div class="journey-page-grid">
+      <div><h3>Previous page</h3><div class="table-wrap"><table><thead><tr><th>Page</th><th>Transitions</th></tr></thead><tbody id="page-journey-previous"></tbody></table></div></div>
+      <div><h3>Next page</h3><div class="table-wrap"><table><thead><tr><th>Page</th><th>Transitions</th></tr></thead><tbody id="page-journey-next"></tbody></table></div></div>
+    </div>
+  </section>
   <section class="panel">
     <div class="panel-heading"><div><p class="eyebrow">Discovery</p><h2>Referrers to this page</h2></div></div>
     <div class="table-wrap"><table><thead><tr><th>Source</th><th>Requests</th></tr></thead><tbody id="page-referrers"></tbody></table></div>

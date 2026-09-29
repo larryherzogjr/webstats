@@ -18,6 +18,7 @@ from flask import Blueprint, current_app, jsonify, request
 from .auth import login_required
 from .bots import AI_AGENTS
 from .db import connect
+from .privacy import INDIVIDUAL_ACTIVITY_PRIVATE_SITES
 from .rollup import PROBE_PATH_PREFIXES, PROBE_PATHS
 
 
@@ -26,7 +27,7 @@ api_bp = Blueprint("api", __name__, url_prefix="/api")
 # This application's access log intentionally omits referrers and may contain
 # sensitive reading activity. It can contribute anonymous totals, but never
 # individual Live Radar rows or country pulses.
-LIVE_PRIVATE_SITES = ("ad-fontes.app",)
+LIVE_PRIVATE_SITES = INDIVIDUAL_ACTIVITY_PRIVATE_SITES
 
 
 def _conn() -> sqlite3.Connection:
@@ -1330,6 +1331,161 @@ def error_intelligence():
     })
 
 
+@api_bp.get("/journeys")
+@login_required
+def journeys():
+    start, end = _date_range()
+    with _conn() as conn:
+        site = _requested_site(conn)
+        is_private = bool(
+            site and site["name"] in INDIVIDUAL_ACTIVITY_PRIVATE_SITES
+        )
+        if is_private:
+            return jsonify({
+                "scope": {"site": site["name"]},
+                "from": start,
+                "to": end,
+                "privacy": {
+                    "protected": True,
+                    "excluded_sites": list(INDIVIDUAL_ACTIVITY_PRIVATE_SITES),
+                },
+                "totals": {
+                    "sessions": 0, "pageviews": 0, "path_steps": 0,
+                    "single_page_sessions": 0, "multi_page_sessions": 0,
+                    "max_depth": 0, "duration_seconds": 0,
+                    "average_depth": 0.0, "multi_page_rate": 0.0,
+                    "average_duration_seconds": 0,
+                },
+                "series": [], "entrances": [], "exits": [], "transitions": [],
+            })
+
+        private_placeholders = ",".join(
+            "?" for _ in INDIVIDUAL_ACTIVITY_PRIVATE_SITES
+        )
+        site_clause = "AND j.site_id=?" if site else ""
+        parameters: tuple[Any, ...] = (
+            start, end, *INDIVIDUAL_ACTIVITY_PRIVATE_SITES,
+            *((site["id"],) if site else ()),
+        )
+        total_row = conn.execute(
+            f"""
+            SELECT COALESCE(SUM(j.sessions),0) sessions,
+                   COALESCE(SUM(j.pageviews),0) pageviews,
+                   COALESCE(SUM(j.path_steps),0) path_steps,
+                   COALESCE(SUM(j.single_page_sessions),0) single_page_sessions,
+                   COALESCE(SUM(j.multi_page_sessions),0) multi_page_sessions,
+                   COALESCE(MAX(j.max_depth),0) max_depth,
+                   COALESCE(SUM(j.duration_seconds),0) duration_seconds
+            FROM daily_journey j JOIN sites s ON s.id=j.site_id
+            WHERE j.day BETWEEN ? AND ?
+              AND s.name NOT IN ({private_placeholders}) {site_clause}
+            """,
+            parameters,
+        ).fetchone()
+        totals = dict(total_row)
+        sessions = totals["sessions"]
+        totals["average_depth"] = round(
+            totals["path_steps"] / sessions, 2
+        ) if sessions else 0.0
+        totals["multi_page_rate"] = round(
+            100 * totals["multi_page_sessions"] / sessions, 1
+        ) if sessions else 0.0
+        totals["average_duration_seconds"] = round(
+            totals["duration_seconds"] / sessions
+        ) if sessions else 0
+
+        series_rows = conn.execute(
+            f"""
+            SELECT j.day bucket, SUM(j.sessions) sessions,
+                   SUM(j.multi_page_sessions) multi_page_sessions,
+                   SUM(j.path_steps) path_steps
+            FROM daily_journey j JOIN sites s ON s.id=j.site_id
+            WHERE j.day BETWEEN ? AND ?
+              AND s.name NOT IN ({private_placeholders}) {site_clause}
+            GROUP BY j.day ORDER BY j.day
+            """,
+            parameters,
+        )
+        series_by_day = {row["bucket"]: dict(row) for row in series_rows}
+        series = [
+            series_by_day.get(
+                day,
+                {
+                    "bucket": day, "sessions": 0,
+                    "multi_page_sessions": 0, "path_steps": 0,
+                },
+            )
+            for day in _day_buckets(start, end)
+        ]
+
+        endpoint_site_clause = "AND e.site_id=?" if site else ""
+        endpoint_parameters = (
+            start, end, *INDIVIDUAL_ACTIVITY_PRIVATE_SITES,
+            *((site["id"],) if site else ()),
+        )
+        entrances = [
+            dict(row)
+            for row in conn.execute(
+                f"""
+                SELECT s.name site, e.path, SUM(e.entrances) visits,
+                       SUM(e.single_page_sessions) single_page_visits
+                FROM daily_journey_endpoint e JOIN sites s ON s.id=e.site_id
+                WHERE e.day BETWEEN ? AND ?
+                  AND s.name NOT IN ({private_placeholders}) {endpoint_site_clause}
+                GROUP BY e.site_id, e.path HAVING SUM(e.entrances)>0
+                ORDER BY visits DESC, s.name, e.path LIMIT 25
+                """,
+                endpoint_parameters,
+            )
+        ]
+        exits = [
+            dict(row)
+            for row in conn.execute(
+                f"""
+                SELECT s.name site, e.path, SUM(e.exits) visits
+                FROM daily_journey_endpoint e JOIN sites s ON s.id=e.site_id
+                WHERE e.day BETWEEN ? AND ?
+                  AND s.name NOT IN ({private_placeholders}) {endpoint_site_clause}
+                GROUP BY e.site_id, e.path HAVING SUM(e.exits)>0
+                ORDER BY visits DESC, s.name, e.path LIMIT 25
+                """,
+                endpoint_parameters,
+            )
+        ]
+        transition_site_clause = "AND t.site_id=?" if site else ""
+        transitions = [
+            dict(row)
+            for row in conn.execute(
+                f"""
+                SELECT s.name site, t.from_path, t.to_path,
+                       SUM(t.transitions) transitions
+                FROM daily_journey_transition t JOIN sites s ON s.id=t.site_id
+                WHERE t.day BETWEEN ? AND ?
+                  AND s.name NOT IN ({private_placeholders}) {transition_site_clause}
+                GROUP BY t.site_id, t.from_path, t.to_path
+                HAVING SUM(t.transitions)>0
+                ORDER BY transitions DESC, s.name, t.from_path, t.to_path
+                LIMIT 50
+                """,
+                endpoint_parameters,
+            )
+        ]
+    return jsonify({
+        "scope": {"site": site["name"] if site else None},
+        "from": start,
+        "to": end,
+        "privacy": {
+            "protected": False,
+            "excluded_sites": list(INDIVIDUAL_ACTIVITY_PRIVATE_SITES),
+        },
+        "totals": totals,
+        "series": series,
+        "entrances": entrances,
+        "exits": exits,
+        "transitions": transitions,
+    })
+
+
 @api_bp.get("/almanac")
 @login_required
 def almanac():
@@ -1767,6 +1923,54 @@ def page_detail(name: str):
             provider, purpose = AI_AGENTS[row["agent"]]
             ai_agents.append({**dict(row), "provider": provider, "purpose": purpose})
 
+        journey_private = name in INDIVIDUAL_ACTIVITY_PRIVATE_SITES
+        if journey_private:
+            journey = {
+                "protected": True, "entrances": 0, "exits": 0,
+                "previous": [], "next": [],
+            }
+        else:
+            journey_endpoint = conn.execute(
+                """
+                SELECT COALESCE(SUM(entrances),0) entrances,
+                       COALESCE(SUM(exits),0) exits
+                FROM daily_journey_endpoint
+                WHERE site_id=? AND path=? AND day BETWEEN ? AND ?
+                """,
+                (site["id"], path, start, end),
+            ).fetchone()
+            previous = [
+                dict(row)
+                for row in conn.execute(
+                    """
+                    SELECT from_path path, SUM(transitions) transitions
+                    FROM daily_journey_transition
+                    WHERE site_id=? AND to_path=? AND day BETWEEN ? AND ?
+                    GROUP BY from_path ORDER BY transitions DESC, from_path LIMIT 15
+                    """,
+                    (site["id"], path, start, end),
+                )
+            ]
+            following = [
+                dict(row)
+                for row in conn.execute(
+                    """
+                    SELECT to_path path, SUM(transitions) transitions
+                    FROM daily_journey_transition
+                    WHERE site_id=? AND from_path=? AND day BETWEEN ? AND ?
+                    GROUP BY to_path ORDER BY transitions DESC, to_path LIMIT 15
+                    """,
+                    (site["id"], path, start, end),
+                )
+            ]
+            journey = {
+                "protected": False,
+                "entrances": journey_endpoint["entrances"],
+                "exits": journey_endpoint["exits"],
+                "previous": previous,
+                "next": following,
+            }
+
     totals = {
         "requests": sum(row["requests"] for row in series),
         "unique_visitors": sum(row["unique_visitors"] for row in series),
@@ -1784,6 +1988,7 @@ def page_detail(name: str):
         "countries": countries,
         "statuses": statuses,
         "ai_agents": ai_agents,
+        "journey": journey,
     })
 
 

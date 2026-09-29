@@ -46,6 +46,76 @@ class RollupTests(unittest.TestCase):
         second = tuple(self.conn.execute("SELECT * FROM daily_site").fetchone())
         self.assertEqual(first, second)
 
+    def test_journeys_collapse_refreshes_split_sessions_and_ignore_noise(self):
+        site_id = site_id_map(self.conn)["example.com"]
+        rows = []
+        observations = (
+            ("a", 100, "/start", 200, 0, 0),
+            ("a", 110, "/start", 200, 0, 0),
+            ("a", 120, "/middle", 200, 0, 0),
+            ("a", 130, "/end", 200, 0, 0),
+            ("a", 2000, "/later", 200, 0, 0),
+            ("b", 140, "/start", 200, 0, 0),
+            ("c", 150, "/bot", 200, 1, 0),
+            ("d", 160, "/asset.css", 200, 0, 1),
+            ("e", 170, "/missing", 404, 0, 0),
+        )
+        for index, (visitor, ts, path, status, bot, asset) in enumerate(observations):
+            rows.append((
+                f"journey-source-{index}", f"journey-fingerprint-{index}",
+                site_id, ts, "2026-09-28", visitor, "GET", path, None,
+                status, 10, None, None, "Mozilla/5.0", "Other browser",
+                "Other", bot, asset, None,
+            ))
+        insert_requests(self.conn, rows)
+        recompute_day(self.conn, "2026-09-28")
+
+        summary = self.conn.execute(
+            "SELECT sessions, pageviews, path_steps, single_page_sessions, "
+            "multi_page_sessions, max_depth, duration_seconds "
+            "FROM daily_journey WHERE site_id=? AND day='2026-09-28'",
+            (site_id,),
+        ).fetchone()
+        self.assertEqual(tuple(summary), (3, 6, 5, 2, 1, 3, 30))
+        transitions = {
+            (row["from_path"], row["to_path"], row["transitions"])
+            for row in self.conn.execute(
+                "SELECT from_path, to_path, transitions "
+                "FROM daily_journey_transition"
+            )
+        }
+        self.assertEqual(
+            transitions,
+            {("/start", "/middle", 1), ("/middle", "/end", 1)},
+        )
+        start = self.conn.execute(
+            "SELECT entrances, exits, single_page_sessions "
+            "FROM daily_journey_endpoint WHERE path='/start'"
+        ).fetchone()
+        self.assertEqual(tuple(start), (2, 1, 1))
+
+    def test_privacy_protected_site_has_no_journey_rollup(self):
+        self.conn.execute("INSERT INTO sites(name) VALUES ('ad-fontes.app')")
+        private_id = site_id_map(self.conn)["ad-fontes.app"]
+        rows = [
+            (
+                f"private-source-{index}", f"private-fingerprint-{index}",
+                private_id, 100 + index, "2026-09-28", "private-reader",
+                "GET", path, None, 200, 10, None, None, "Mozilla/5.0",
+                "Other browser", "Other", 0, 0, None,
+            )
+            for index, path in enumerate(("/private-one", "/private-two"))
+        ]
+        insert_requests(self.conn, rows)
+        recompute_day(self.conn, "2026-09-28")
+        self.assertEqual(
+            self.conn.execute(
+                "SELECT COUNT(*) FROM daily_journey WHERE site_id=?",
+                (private_id,),
+            ).fetchone()[0],
+            0,
+        )
+
     def test_retention_keeps_rollup(self):
         old_day = (date.today() - timedelta(days=200)).isoformat()
         site_id = site_id_map(self.conn)["example.com"]

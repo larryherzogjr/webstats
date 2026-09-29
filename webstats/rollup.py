@@ -9,6 +9,7 @@ from typing import Iterable, Optional
 from zoneinfo import ZoneInfo
 
 from .bots import AI_AGENTS, classify_feed_reader
+from .privacy import INDIVIDUAL_ACTIVITY_PRIVATE_SITES
 
 
 VISITOR_MILESTONES = (
@@ -56,6 +57,7 @@ def recompute_day(conn: sqlite3.Connection, day: str) -> None:
         "daily_referrer", "daily_page_referrer", "daily_agent",
         "daily_page_agent", "daily_page_country", "daily_page_status",
         "daily_feed_reader", "daily_country", "daily_status", "daily_404",
+        "daily_journey", "daily_journey_endpoint", "daily_journey_transition",
     )
     for table in tables:
         conn.execute(f"DELETE FROM {table} WHERE day = ?", (day,))
@@ -197,7 +199,120 @@ def recompute_day(conn: sqlite3.Connection, day: str) -> None:
         (day,),
     )
     _refresh_feed_readers_for_day(conn, day)
+    _refresh_journeys_for_day(conn, day)
     _refresh_events_for_day(conn, day)
+
+
+def _refresh_journeys_for_day(conn: sqlite3.Connection, day: str) -> None:
+    """Build anonymous 30-minute visit aggregates without retaining sessions."""
+    private = set(INDIVIDUAL_ACTIVITY_PRIVATE_SITES)
+    rows = conn.execute(
+        """
+        SELECT r.site_id, s.name site, r.ip_hash, r.ts, r.id, r.path
+        FROM requests r JOIN sites s ON s.id=r.site_id
+        WHERE r.day=? AND r.is_bot=0 AND r.is_asset=0
+          AND r.method='GET' AND r.status BETWEEN 200 AND 399
+        ORDER BY r.site_id, r.ip_hash, r.ts, r.id
+        """,
+        (day,),
+    )
+    summaries: dict[int, dict[str, int]] = defaultdict(
+        lambda: {
+            "sessions": 0, "pageviews": 0, "path_steps": 0,
+            "single_page_sessions": 0, "multi_page_sessions": 0,
+            "max_depth": 0, "duration_seconds": 0,
+        }
+    )
+    endpoints: dict[tuple[int, str], list[int]] = defaultdict(
+        lambda: [0, 0, 0]
+    )
+    transitions: dict[tuple[int, str, str], int] = defaultdict(int)
+
+    current_key: Optional[tuple[int, str]] = None
+    paths: list[str] = []
+    pageviews = 0
+    first_ts = 0
+    last_ts = 0
+
+    def flush() -> None:
+        nonlocal paths, pageviews, first_ts, last_ts
+        if current_key is None or not paths:
+            return
+        site_id = current_key[0]
+        summary = summaries[site_id]
+        depth = len(paths)
+        summary["sessions"] += 1
+        summary["pageviews"] += pageviews
+        summary["path_steps"] += depth
+        summary["max_depth"] = max(summary["max_depth"], depth)
+        summary["duration_seconds"] += max(0, last_ts - first_ts)
+        is_single = int(depth == 1)
+        summary["single_page_sessions"] += is_single
+        summary["multi_page_sessions"] += int(depth > 1)
+        endpoints[(site_id, paths[0])][0] += 1
+        endpoints[(site_id, paths[-1])][1] += 1
+        if is_single:
+            endpoints[(site_id, paths[0])][2] += 1
+        for from_path, to_path in zip(paths, paths[1:]):
+            transitions[(site_id, from_path, to_path)] += 1
+
+    for row in rows:
+        if row["site"] in private:
+            continue
+        key = (row["site_id"], row["ip_hash"])
+        new_session = key != current_key or (last_ts and row["ts"] - last_ts > 1800)
+        if new_session:
+            flush()
+            current_key = key
+            paths = []
+            pageviews = 0
+            first_ts = row["ts"]
+        pageviews += 1
+        last_ts = row["ts"]
+        if not paths or paths[-1] != row["path"]:
+            paths.append(row["path"])
+    flush()
+
+    conn.executemany(
+        """
+        INSERT INTO daily_journey(
+            site_id, day, sessions, pageviews, path_steps,
+            single_page_sessions, multi_page_sessions, max_depth,
+            duration_seconds
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            (
+                site_id, day, values["sessions"], values["pageviews"],
+                values["path_steps"], values["single_page_sessions"],
+                values["multi_page_sessions"], values["max_depth"],
+                values["duration_seconds"],
+            )
+            for site_id, values in summaries.items()
+        ),
+    )
+    conn.executemany(
+        """
+        INSERT INTO daily_journey_endpoint(
+            site_id, day, path, entrances, exits, single_page_sessions
+        ) VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        (
+            (site_id, day, path, *values)
+            for (site_id, path), values in endpoints.items()
+        ),
+    )
+    conn.executemany(
+        """
+        INSERT INTO daily_journey_transition(
+            site_id, day, from_path, to_path, transitions
+        ) VALUES (?, ?, ?, ?, ?)
+        """,
+        (
+            (site_id, day, from_path, to_path, count)
+            for (site_id, from_path, to_path), count in transitions.items()
+        ),
+    )
 
 
 def _refresh_feed_readers_for_day(conn: sqlite3.Connection, day: str) -> None:
