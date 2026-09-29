@@ -1,3 +1,4 @@
+from dataclasses import replace
 from pathlib import Path
 import tempfile
 import unittest
@@ -65,6 +66,21 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(self.client.get("/live").status_code, 200)
         self.assertEqual(self.client.get("/health").status_code, 200)
         self.assertEqual(self.client.get("/site/not-configured.test").status_code, 404)
+
+    def test_geoip_attribution_appears_when_enabled(self):
+        config = replace(
+            self.config,
+            geoip=GeoIPConfig(True, self.config.geoip.db_path),
+        )
+        app = create_app(config)
+        app.config.update(TESTING=True, SESSION_COOKIE_SECURE=False)
+        client = app.test_client()
+        with client.session_transaction() as session:
+            session["authenticated"] = True
+        response = client.get("/site/example.com")
+        self.assertIn(
+            '<a href="https://db-ip.com"', response.get_data(as_text=True)
+        )
 
     def test_health_is_public_and_safe(self):
         response = self.client.get("/api/health")

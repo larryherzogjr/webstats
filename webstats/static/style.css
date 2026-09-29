@@ -82,6 +82,9 @@ th, td { padding: 11px 8px; border-bottom: 1px solid rgba(143, 162, 186, .12); }
 th:last-child, td:last-child { text-align: right; }
 td:first-child { max-width: 480px; overflow-wrap: anywhere; }
 .empty { color: var(--muted); text-align: center !important; padding: 24px; }
+.data-attribution { color: var(--muted); font-size: 10px; margin: 12px 8px 0; text-align: right; }
+.data-attribution a { text-decoration: none; }
+.data-attribution a:hover { color: var(--accent); }
 .alert { background: rgba(255, 122, 138, .12); border: 1px solid rgba(255, 122, 138, .35); color: #ffc2ca; border-radius: 12px; padding: 12px 14px; margin-bottom: 16px; }
 .hidden { display: none; }
 .pulse { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 6px rgba(110, 231, 199, .12); margin-right: 6px; }

@@ -17,10 +17,13 @@ def overview():
 @views_bp.get("/site/<path:name>")
 @login_required
 def site(name: str):
-    configured = {site.name for site in current_app.config["WEBSTATS_CONFIG"].sites}
+    config = current_app.config["WEBSTATS_CONFIG"]
+    configured = {site.name for site in config.sites}
     if name not in configured:
         abort(404)
-    return render_template("site.html", site_name=name)
+    return render_template(
+        "site.html", site_name=name, geoip_enabled=config.geoip.enabled
+    )
 
 
 @views_bp.get("/live")
@@ -33,4 +36,3 @@ def live():
 @login_required
 def health():
     return render_template("health.html")
-

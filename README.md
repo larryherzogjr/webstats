@@ -88,7 +88,12 @@ matched and ignored.
 
 GeoIP is off by default. To enable it, install the optional dependency with
 `pip install '/opt/webstats[geoip]'`, place a MaxMind-compatible country database
-at the configured path, and set `geoip.enabled = true`.
+at the configured path, and set `geoip.enabled = true`. The recommended free
+source is the monthly DB-IP Country Lite MMDB database. When GeoIP is enabled,
+the site page displays the attribution required by DB-IP's CC BY 4.0 license.
+Country lookup happens in memory during ingestion; Webstats still stores no raw
+IP addresses. Existing database rows cannot be enriched after the fact, but
+retained nginx logs can be reimported into a fresh database.
 
 ## Development
 

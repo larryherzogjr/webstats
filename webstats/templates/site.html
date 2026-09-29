@@ -41,6 +41,9 @@
   <section class="panel">
     <div class="panel-heading"><div><p class="eyebrow">Location</p><h2>Countries</h2></div></div>
     <div class="table-wrap"><table><thead><tr><th>Country</th><th>Requests</th></tr></thead><tbody id="countries-table"></tbody></table></div>
+    {% if geoip_enabled %}
+    <p class="data-attribution"><a href="https://db-ip.com" target="_blank" rel="noopener noreferrer">IP Geolocation by DB-IP</a></p>
+    {% endif %}
   </section>
   <section class="panel">
     <div class="panel-heading"><div><p class="eyebrow">Automation</p><h2>Bot traffic</h2></div></div>
@@ -48,4 +51,3 @@
   </section>
 </div>
 {% endblock %}
-
