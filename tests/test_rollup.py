@@ -6,6 +6,7 @@ import unittest
 from webstats.config import Config, GeoIPConfig, ServerConfig, SiteConfig, StorageConfig
 from webstats.db import connect, initialize, insert_requests, site_id_map
 from webstats.rollup import (
+    _RESURFACED_QUERY,
     _refresh_summary_moments,
     maintain_rollups,
     recompute_day,
@@ -49,6 +50,25 @@ class RollupTests(unittest.TestCase):
             "SELECT * FROM daily_filter WHERE include_bots=1 AND include_assets=1"
         ).fetchone())
         self.assertEqual(first, second)
+
+    def test_resurfaced_query_forces_history_index(self):
+        plan = self.conn.execute(
+            f"EXPLAIN QUERY PLAN {_RESURFACED_QUERY}",
+            ("2026-09-29", "2026-09-29"),
+        ).fetchall()
+        self.assertTrue(
+            any("daily_page_status_history" in row[3] for row in plan),
+            [row[3] for row in plan],
+        )
+
+    def test_rollup_maintenance_optimizes_query_planner(self):
+        statements = []
+        self.conn.set_trace_callback(statements.append)
+        try:
+            maintain_rollups(self.conn, 90, set())
+        finally:
+            self.conn.set_trace_callback(None)
+        self.assertIn("PRAGMA optimize", statements)
 
     def test_performance_rollup_separates_application_health_from_probes(self):
         site_id = site_id_map(self.conn)["example.com"]

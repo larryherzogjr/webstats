@@ -26,6 +26,31 @@ PROBE_PATH_PREFIXES = (
     "/_profiler", "/server-status", "/phpmyadmin", "/boaform",
 )
 PROBE_PATHS = {"/wp-login.php", "/xmlrpc.php", "/phpinfo.php"}
+_RESURFACED_QUERY = """
+    WITH current_pages AS (
+        SELECT r.site_id, MIN(r.ts) occurred_at, r.day, r.path
+        FROM requests r
+        WHERE r.day=? AND r.is_bot=0 AND r.is_asset=0
+          AND r.method IN ('GET', 'HEAD')
+          AND r.status BETWEEN 200 AND 399
+        GROUP BY r.site_id, r.day, r.path
+    )
+    SELECT * FROM (
+        SELECT current_pages.*,
+               (
+                   SELECT MAX(old.day)
+                   FROM daily_page_status AS old
+                        INDEXED BY daily_page_status_history
+                   WHERE old.site_id=current_pages.site_id
+                     AND old.path=current_pages.path
+                     AND old.day<current_pages.day
+                     AND old.status BETWEEN 200 AND 399
+                     AND old.human_nonasset_requests>0
+               ) previous_seen
+        FROM current_pages
+    )
+    WHERE previous_seen <= date(?, '-30 days')
+"""
 
 
 def maintain_rollups(
@@ -79,6 +104,10 @@ def maintain_rollups(
         (cutoff,),
     )
     conn.execute("DELETE FROM requests WHERE day < ?", (cutoff,))
+    # Refresh planner statistics opportunistically after the rollup workload.
+    # INDEXED BY protects the known history hot path below; optimize improves
+    # plans for the rest of the growing permanent aggregate tables.
+    conn.execute("PRAGMA optimize")
     conn.commit()
 
 
@@ -575,21 +604,7 @@ def _refresh_events_for_day(conn: sqlite3.Connection, day: str) -> None:
         if _is_meaningful_page(row["path"]):
             _upsert_event(conn, row, "new_page")
 
-    resurfaced = conn.execute(
-        """
-        SELECT r.site_id, MIN(r.ts) occurred_at, r.day, r.path,
-               MAX(old.day) previous_seen
-        FROM requests r JOIN daily_page_status old
-          ON old.site_id=r.site_id AND old.path=r.path AND old.day<r.day
-         AND old.status BETWEEN 200 AND 399
-         AND old.human_nonasset_requests>0
-        WHERE r.day=? AND r.is_bot=0 AND r.is_asset=0
-          AND r.method IN ('GET', 'HEAD') AND r.status BETWEEN 200 AND 399
-        GROUP BY r.site_id, r.day, r.path
-        HAVING MAX(old.day) <= date(?, '-30 days')
-        """,
-        (day, day),
-    )
+    resurfaced = conn.execute(_RESURFACED_QUERY, (day, day))
     for row in resurfaced:
         if not _is_meaningful_page(row["path"]):
             continue

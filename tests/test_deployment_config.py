@@ -56,6 +56,19 @@ class DeploymentConfigTests(unittest.TestCase):
         )
         self.assertNotIn('style="', javascript)
 
+    def test_inbox_seen_baseline_is_stable_for_the_browser_session(self):
+        javascript = (ROOT / "webstats/static/dashboard.js").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("const inboxSeenAt = readInboxSeenAt();", javascript)
+        self.assertNotIn("inboxSeenAt = value;", javascript)
+
+    def test_live_auto_refresh_regions_are_not_polite_live_regions(self):
+        template = (ROOT / "webstats/templates/live.html").read_text(
+            encoding="utf-8"
+        )
+        self.assertNotIn('aria-live="polite"', template)
+
     def test_chronicle_service_has_a_hard_runtime_limit(self):
         unit = (ROOT / "deploy/webstats-chronicle.service").read_text(
             encoding="utf-8"

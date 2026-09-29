@@ -18,7 +18,7 @@
   let inboxCategory = initialState.category;
   let chronicleKind = initialState.kind;
   let chronicleQuery = initialState.q;
-  let inboxSeenAt = readInboxSeenAt();
+  const inboxSeenAt = readInboxSeenAt();
   let galaxyData = null;
   let errorsDays = [7, 30, 90].includes(Number(new URLSearchParams(window.location.search).get("days")))
     ? Number(new URLSearchParams(window.location.search).get("days")) : 30;
@@ -383,7 +383,6 @@
   }
 
   function writeInboxSeenAt(value) {
-    inboxSeenAt = value;
     try { window.localStorage.setItem("webstatsInboxSeenAt", String(value)); }
     catch (_error) { /* Browser storage can be disabled without breaking Inbox. */ }
   }
