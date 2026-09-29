@@ -6,6 +6,7 @@
   const colors = ["#6ee7c7", "#61a9ff", "#a78bfa", "#f5c66b", "#ff7a8a", "#5eead4", "#fb923c"];
   const charts = {};
   const serverToday = document.body.dataset.serverToday || localDate(new Date());
+  const defaultDays = Number(document.body.dataset.defaultDays) || 7;
   const initialState = stateFromUrl();
   let range = initialState.range;
   let pagesOffset = 0;
@@ -40,7 +41,7 @@
 
   function stateFromUrl() {
     const params = new URLSearchParams(window.location.search);
-    const fallback = defaultRange(7);
+    const fallback = defaultRange(defaultDays);
     const from = params.get("from") || fallback.from;
     const to = params.get("to") || fallback.to;
     const valid = validDate(from) && validDate(to) && from <= to;
@@ -1440,6 +1441,97 @@
     } catch (error) { showError(error); }
   }
 
+  function episodeLabel(value) {
+    return String(value || "").replaceAll("-", " ").replace(/\b\w/g, letter => letter.toUpperCase());
+  }
+
+  function episodeTimeline(episode) {
+    const maximum = Math.max(...episode.timeline.map(item => item.requests), 1);
+    return `<div class="episode-timeline" role="img" aria-label="Daily traffic around this attention episode">${episode.timeline.map(item => {
+      const height = Math.max(4, Math.round(100 * item.requests / maximum));
+      const title = `${item.day}: ${fmt.format(item.requests)} request${item.requests === 1 ? "" : "s"}${item.peak ? " (peak)" : ""}`;
+      return `<span class="episode-day ${escapeHtml(item.phase)}${item.peak ? " peak" : ""}" style="height:${height}%" title="${escapeHtml(title)}"><i></i></span>`;
+    }).join("")}</div><div class="episode-timeline-axis"><span>${escapeHtml(episode.timeline[0]?.day || episode.start)}</span><span>Peak ${escapeHtml(episode.peak_day)}</span><span>${escapeHtml(episode.timeline.at(-1)?.day || episode.end)}</span></div>`;
+  }
+
+  function episodeDriverRows(rows, key, episode, kind) {
+    if (!rows.length) return '<p class="episode-driver-empty">No concentrated driver.</p>';
+    return rows.slice(0, 4).map(item => {
+      const label = item[key];
+      let href = "";
+      if (kind === "page" || kind === "error") {
+        href = pageStoryHref({ ...item, site: episode.site }, episode.start, episode.end);
+      } else if (kind === "referrer") {
+        href = `/links?${new URLSearchParams({ from: episode.start, to: episode.end, site: episode.site, source: label })}`;
+      } else if (kind === "crawler") {
+        href = `/ai-crawlers?${new URLSearchParams({ from: episode.start, to: episode.end, site: episode.site })}`;
+      }
+      const name = href
+        ? `<a href="${escapeHtml(href)}">${escapeHtml(label)}</a>`
+        : `<strong>${escapeHtml(label)}</strong>`;
+      const movement = item.new ? "new" : `${signed(item.change)} vs before`;
+      return `<div class="episode-driver-row">${name}<span>${fmt.format(item.requests)}</span><small>${escapeHtml(movement)}</small></div>`;
+    }).join("");
+  }
+
+  function episodeMoments(moments) {
+    if (!moments.length) return '<p class="episode-driver-empty">No automatic moment landed inside the episode.</p>';
+    return moments.slice(0, 4).map(moment => {
+      const [label, detail, category] = eventPresentation(moment);
+      return `<div class="episode-moment"><span class="event-marker ${escapeHtml(category)}"></span><div><strong>${escapeHtml(label)}</strong><small>${escapeHtml(detail)}</small></div></div>`;
+    }).join("");
+  }
+
+  function episodeCard(episode) {
+    const multiple = episode.peak_multiple === null ? "new baseline" : `${episode.peak_multiple}× baseline`;
+    const aftermath = episode.aftermath_average === null
+      ? "Awaiting aftermath"
+      : `${episode.aftermath_average} avg after`;
+    const countryRows = episodeDriverRows(episode.drivers.countries, "country", episode, "country");
+    return `<article class="episode-card ${escapeHtml(episode.kind)}">
+      <header class="episode-card-header">
+        <div><div class="episode-badges"><span class="episode-badge kind">${escapeHtml(episodeLabel(episode.kind))}</span><span class="episode-badge trajectory">${escapeHtml(episodeLabel(episode.trajectory))}</span><span class="episode-badge effect ${escapeHtml(episode.lasting_effect)}">${escapeHtml(episodeLabel(episode.lasting_effect))}</span></div><h3>${escapeHtml(episode.site)}</h3><p>${escapeHtml(dateLabel(episode.start, episode.end))} · ${fmt.format(episode.duration_days)} day${episode.duration_days === 1 ? "" : "s"}</p></div>
+        <div class="episode-peak"><strong>${fmt.format(episode.peak_requests)}</strong><span>peak requests</span><small>${escapeHtml(multiple)}</small></div>
+      </header>
+      <div class="episode-stat-strip"><span><strong>${fmt.format(episode.requests)}</strong> during episode</span><span><strong>+${fmt.format(episode.excess_requests)}</strong> above baseline</span><span><strong>${fmt.format(episode.baseline_average)}</strong> prior daily avg</span><span><strong>${escapeHtml(aftermath)}</strong></span></div>
+      <div class="episode-trajectory">${episodeTimeline(episode)}</div>
+      <div class="episode-copy">${episode.narrative.map((line, index) => `<p${index === 0 ? ' class="lead"' : ""}>${escapeHtml(line)}</p>`).join("")}</div>
+      <div class="episode-drivers">
+        <section><h4>Pages</h4>${episodeDriverRows(episode.drivers.pages, "path", episode, "page")}</section>
+        <section><h4>Referrers</h4>${episodeDriverRows(episode.drivers.referrers, "source", episode, "referrer")}<p class="episode-direct">${fmt.format(episode.drivers.direct_or_unknown)} direct or unknown</p></section>
+        <section><h4>Countries</h4>${countryRows}</section>
+        <section><h4>Search &amp; AI crawlers</h4>${episodeDriverRows(episode.drivers.crawlers, "agent", episode, "crawler")}</section>
+        <section><h4>Errors</h4><p class="episode-driver-summary"><strong>${fmt.format(episode.drivers.errors.requests)}</strong> human errors · ${signed(episode.drivers.errors.change)} vs before</p>${episodeDriverRows(episode.drivers.errors.paths, "path", episode, "error")}</section>
+        <section><h4>Automatic moments</h4>${episodeMoments(episode.drivers.moments)}</section>
+      </div>
+    </article>`;
+  }
+
+  async function loadEpisodes() {
+    clearError();
+    try {
+      const data = await api(`/api/episodes?${query({ limit: "20" })}`);
+      document.querySelector("#range-label").textContent = dateLabel(data.window.from, data.window.to);
+      document.querySelector("#episodes-heading").textContent = data.summary.episodes
+        ? `${fmt.format(data.summary.episodes)} unusual attention episode${data.summary.episodes === 1 ? "" : "s"}`
+        : "No unusual attention episodes";
+      document.querySelector("#episodes-narrative").textContent = data.narrative;
+      document.querySelector("#episodes-metrics").innerHTML = [
+        metric("Episodes", fmt.format(data.summary.episodes)),
+        metric("Sites affected", fmt.format(data.summary.sites)),
+        metric("Excess requests", `+${fmt.format(data.summary.excess_requests)}`),
+        metric("Still unfolding", fmt.format(data.summary.active)),
+        metric("Longest episode", `${fmt.format(data.summary.longest_days)} day${data.summary.longest_days === 1 ? "" : "s"}`),
+      ].join("");
+      const privacy = document.querySelector("#episodes-privacy");
+      privacy.classList.toggle("hidden", !data.privacy.protected);
+      privacy.textContent = data.privacy.protected ? data.narrative : "";
+      document.querySelector("#episodes-list").innerHTML = data.episodes.length
+        ? data.episodes.map(episodeCard).join("")
+        : '<div class="episode-empty"><strong>The traffic stayed inside its ordinary range.</strong><p>Try a longer window or select another site. Smaller changes still appear in the Change Engine.</p></div>';
+    } catch (error) { showError(error); }
+  }
+
   async function loadAiPolicy() {
     clearError();
     try {
@@ -1601,6 +1693,11 @@
     setupFilters(loadChanges);
     setupSiteFilter(() => { syncUrl(); loadChanges(); });
     loadChanges();
+  }
+  if (page === "episodes") {
+    setupFilters(loadEpisodes);
+    setupSiteFilter(() => { syncUrl(); loadEpisodes(); });
+    loadEpisodes();
   }
   if (page === "content-observatory") {
     setupFilters(loadContentObservatory);

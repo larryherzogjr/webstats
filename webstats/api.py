@@ -18,6 +18,7 @@ from flask import Blueprint, current_app, jsonify, request
 from .auth import login_required
 from .bots import AI_AGENTS
 from .db import connect
+from .episodes import detect_episodes
 from .privacy import INDIVIDUAL_ACTIVITY_PRIVATE_SITES
 from .robots import fetch_robots_policies, parse_robots, path_allowed, policy_for
 from .rollup import PROBE_PATH_PREFIXES, PROBE_PATHS
@@ -1249,6 +1250,330 @@ def content_observatory():
             "off_sitemap": len(off_sitemap) > limit,
             "policy_conflicts": len(conflicts) > limit,
         },
+    })
+
+
+def _episode_dimension(
+    conn: sqlite3.Connection, table: str, key_select: str, key_name: str,
+    metric: str, site_id: int, start: date, end: date,
+    previous_start: date, previous_end: date, where: str = "",
+    extra_parameters: tuple[Any, ...] = (), limit: int = 6,
+) -> list[dict[str, Any]]:
+    rows = []
+    for row in conn.execute(
+        f"""
+        SELECT {key_select} value,
+          SUM(CASE WHEN x.day BETWEEN ? AND ? THEN {metric} ELSE 0 END) requests,
+          SUM(CASE WHEN x.day BETWEEN ? AND ? THEN {metric} ELSE 0 END) previous_requests
+        FROM {table} x
+        WHERE x.day BETWEEN ? AND ? AND x.site_id=? {where}
+        GROUP BY value
+        HAVING SUM(CASE WHEN x.day BETWEEN ? AND ? THEN {metric} ELSE 0 END)>0
+        """,
+        (
+            start.isoformat(), end.isoformat(),
+            previous_start.isoformat(), previous_end.isoformat(),
+            previous_start.isoformat(), end.isoformat(), site_id,
+            *extra_parameters, start.isoformat(), end.isoformat(),
+        ),
+    ):
+        item = {
+            key_name: row["value"],
+            "requests": row["requests"] or 0,
+            "previous_requests": row["previous_requests"] or 0,
+        }
+        item["change"] = item["requests"] - item["previous_requests"]
+        item["new"] = item["previous_requests"] == 0
+        rows.append(item)
+    rows.sort(key=lambda item: (
+        -max(item["change"], 0), -item["requests"], str(item[key_name])
+    ))
+    return rows[:limit]
+
+
+def _episode_narrative(episode: dict[str, Any]) -> list[str]:
+    multiple = episode["peak_multiple"]
+    peak_context = (
+        f"{multiple:g} times its preceding baseline"
+        if multiple is not None else "above a previously quiet baseline"
+    )
+    lines = [
+        f"Attention peaked at {episode['peak_requests']:,} requests on "
+        f"{episode['peak_day']}, {peak_context}. The episode produced "
+        f"{episode['excess_requests']:,} requests above its expected level."
+    ]
+    pages = episode["drivers"]["pages"]
+    if pages:
+        page = pages[0]
+        lines.append(
+            f"{page['path']} was the largest content driver with "
+            f"{page['requests']:,} requests ({page['change']:+,} versus the "
+            "preceding equal-length window)."
+        )
+    referrers = episode["drivers"]["referrers"]
+    if referrers:
+        source = referrers[0]
+        lines.append(
+            f"{source['source']} was the strongest referring source, sending "
+            f"{source['requests']:,} requests ({source['change']:+,})."
+        )
+    errors = episode["drivers"]["errors"]
+    if errors["requests"]:
+        lines.append(
+            f"Human-classified errors contributed {errors['requests']:,} requests "
+            f"({errors['change']:+,} versus before)."
+        )
+    crawlers = episode["drivers"]["crawlers"]
+    if crawlers:
+        leader = crawlers[0]
+        lines.append(
+            f"In parallel, {leader['agent']} made {leader['requests']:,} page "
+            f"requests ({leader['change']:+,})."
+        )
+    aftermath = episode["lasting_effect"]
+    if aftermath == "sustained":
+        lines.append("Attention remained materially above baseline in the following week.")
+    elif aftermath == "returned":
+        lines.append("Traffic returned near its earlier baseline in the following week.")
+    else:
+        lines.append("The episode is too recent to judge its lasting effect.")
+    return lines
+
+
+@api_bp.get("/episodes")
+@login_required
+def attention_episodes():
+    start_text, end_text = _date_range()
+    start = date.fromisoformat(start_text)
+    end = date.fromisoformat(end_text)
+    limit = _int_arg("limit", 20, 1, 50)
+    config = current_app.config["WEBSTATS_CONFIG"]
+    today = datetime.now(ZoneInfo(config.server.timezone)).date()
+    analysis_start = start - timedelta(days=28)
+    analysis_end = min(today, end + timedelta(days=14))
+    with _conn() as conn:
+        selected_site = _requested_site(conn)
+        if (
+            selected_site
+            and selected_site["name"] in INDIVIDUAL_ACTIVITY_PRIVATE_SITES
+        ):
+            return jsonify({
+                "window": {"from": start_text, "to": end_text},
+                "scope": {"site": selected_site["name"]},
+                "privacy": {
+                    "protected": True,
+                    "excluded_sites": list(INDIVIDUAL_ACTIVITY_PRIVATE_SITES),
+                },
+                "summary": {
+                    "episodes": 0, "active": 0, "sites": 0,
+                    "excess_requests": 0, "longest_days": 0,
+                },
+                "narrative": "Attention episodes are intentionally unavailable for this privacy-protected site.",
+                "episodes": [],
+            })
+        private_placeholders = ",".join(
+            "?" for _ in INDIVIDUAL_ACTIVITY_PRIVATE_SITES
+        )
+        site_clause = "AND id=?" if selected_site else ""
+        sites = list(conn.execute(
+            f"""
+            SELECT id, name FROM sites
+            WHERE name NOT IN ({private_placeholders}) {site_clause}
+            ORDER BY name
+            """,
+            (*INDIVIDUAL_ACTIVITY_PRIVATE_SITES,
+             *((selected_site["id"],) if selected_site else ())),
+        ))
+        stored = conn.execute(
+            f"""
+            SELECT f.site_id, f.day, f.requests
+            FROM daily_filter f JOIN sites s ON s.id=f.site_id
+            WHERE f.day BETWEEN ? AND ? AND f.include_bots=0
+              AND f.include_assets=0
+              AND s.name NOT IN ({private_placeholders})
+              {('AND f.site_id=?' if selected_site else '')}
+            """,
+            (
+                analysis_start.isoformat(), analysis_end.isoformat(),
+                *INDIVIDUAL_ACTIVITY_PRIVATE_SITES,
+                *((selected_site["id"],) if selected_site else ()),
+            ),
+        )
+        values = {
+            (row["site_id"], row["day"]): row["requests"] for row in stored
+        }
+        buckets = _day_buckets(
+            analysis_start.isoformat(), analysis_end.isoformat()
+        )
+        detected = []
+        for site in sites:
+            series = [
+                {"day": day, "requests": values.get((site["id"], day), 0)}
+                for day in buckets
+            ]
+            for item in detect_episodes(series, start, end):
+                item["site"] = site["name"]
+                item["site_id"] = site["id"]
+                detected.append(item)
+
+        detected.sort(key=lambda item: (
+            -item["excess_requests"], item["start"], item["site"]
+        ))
+        detected = detected[:limit]
+        all_agents = tuple({**SEARCH_CRAWLERS, **AI_AGENTS})
+        agent_placeholders = ",".join("?" for _ in all_agents)
+        for episode in detected:
+            episode_start = date.fromisoformat(episode["start"])
+            episode_end = date.fromisoformat(episode["end"])
+            duration = (episode_end - episode_start).days + 1
+            prior_end = episode_start - timedelta(days=1)
+            prior_start = prior_end - timedelta(days=duration - 1)
+            site_id = episode["site_id"]
+            pages = _episode_dimension(
+                conn, "daily_page_status", "x.path", "path",
+                "x.human_nonasset_requests", site_id,
+                episode_start, episode_end, prior_start, prior_end,
+                "AND x.status BETWEEN 200 AND 399",
+            )
+            referrer_rows = _episode_dimension(
+                conn, "daily_page_referrer", "LOWER(x.referrer_host)", "source",
+                "x.human_nonasset_requests", site_id,
+                episode_start, episode_end, prior_start, prior_end,
+                limit=1000,
+            )
+            countries = _episode_dimension(
+                conn, "daily_country", "x.country", "country",
+                "x.human_nonasset_requests", site_id,
+                episode_start, episode_end, prior_start, prior_end,
+            )
+            crawlers = _episode_dimension(
+                conn, "daily_page_agent", "x.ua_family", "agent",
+                "x.requests-x.asset_requests", site_id,
+                episode_start, episode_end, prior_start, prior_end,
+                f"AND x.is_bot=1 AND x.ua_family IN ({agent_placeholders})",
+                all_agents, limit=20,
+            )
+            for item in crawlers:
+                provider, purpose = (
+                    SEARCH_CRAWLERS.get(item["agent"])
+                    or AI_AGENTS[item["agent"]]
+                )
+                item["provider"] = provider
+                item["purpose"] = purpose
+                item["kind"] = (
+                    "search" if item["agent"] in SEARCH_CRAWLERS else "ai"
+                )
+            error_paths = _episode_dimension(
+                conn, "daily_page_status", "x.path", "path",
+                "x.human_nonasset_requests", site_id,
+                episode_start, episode_end, prior_start, prior_end,
+                "AND x.status>=400", limit=1000,
+            )
+            error_totals = conn.execute(
+                """
+                SELECT
+                  COALESCE(SUM(CASE WHEN day BETWEEN ? AND ?
+                    THEN status_4xx+status_5xx ELSE 0 END),0) requests,
+                  COALESCE(SUM(CASE WHEN day BETWEEN ? AND ?
+                    THEN status_4xx+status_5xx ELSE 0 END),0) previous_requests
+                FROM daily_filter
+                WHERE site_id=? AND include_bots=0 AND include_assets=0
+                  AND day BETWEEN ? AND ?
+                """,
+                (
+                    episode["start"], episode["end"],
+                    prior_start.isoformat(), prior_end.isoformat(), site_id,
+                    prior_start.isoformat(), episode["end"],
+                ),
+            ).fetchone()
+            error_requests = error_totals["requests"]
+            previous_errors = error_totals["previous_requests"]
+            moments = [
+                dict(row) for row in conn.execute(
+                    """
+                    SELECT kind, day, occurred_at, path, source, agent, country, value
+                    FROM events WHERE site_id=? AND day BETWEEN ? AND ?
+                    ORDER BY occurred_at, id
+                    """,
+                    (site_id, episode["start"], episode["end"]),
+                )
+            ]
+            referred = sum(item["requests"] for item in referrer_rows)
+            episode["drivers"] = {
+                "pages": pages,
+                "referrers": referrer_rows[:6],
+                "countries": countries,
+                "crawlers": crawlers,
+                "errors": {
+                    "requests": error_requests,
+                    "previous_requests": previous_errors,
+                    "change": error_requests - previous_errors,
+                    "paths": error_paths[:6],
+                },
+                "moments": moments,
+                "direct_or_unknown": max(0, episode["requests"] - referred),
+            }
+            if error_requests >= max(3, episode["requests"] * 0.5):
+                episode["kind"] = "error-wave"
+            elif (
+                referrer_rows and referrer_rows[0]["change"]
+                >= max(3, episode["excess_requests"] * 0.5)
+            ):
+                episode["kind"] = "referral-wave"
+            elif (
+                pages and pages[0]["new"] and pages[0]["requests"]
+                >= max(3, episode["excess_requests"] * 0.5)
+            ):
+                episode["kind"] = "breakout"
+            else:
+                episode["kind"] = "attention-wave"
+            episode["narrative"] = _episode_narrative(episode)
+            episode["id"] = f"{episode['site']}:{episode['start']}"
+            episode.pop("site_id", None)
+
+    kinds = defaultdict(int)
+    for episode in detected:
+        kinds[episode["kind"]] += 1
+    active = sum(
+        episode["trajectory"] in {"active", "plateau", "fading"}
+        and episode["lasting_effect"] == "unresolved"
+        for episode in detected
+    )
+    excess = sum(episode["excess_requests"] for episode in detected)
+    if not detected:
+        narrative = (
+            "No statistically unusual attention episodes were detected in this "
+            "window. Ordinary day-to-day movement remains in the Change Engine."
+        )
+    else:
+        largest = detected[0]
+        narrative = (
+            f"Webstats reconstructed {len(detected)} attention episode"
+            f"{'s' if len(detected) != 1 else ''} across "
+            f"{len({item['site'] for item in detected})} site"
+            f"{'s' if len({item['site'] for item in detected}) != 1 else ''}, "
+            f"representing {excess:,} requests above baseline. The largest peaked "
+            f"on {largest['peak_day']} at {largest['peak_requests']:,} requests."
+        )
+    return jsonify({
+        "window": {"from": start_text, "to": end_text},
+        "scope": {"site": selected_site["name"] if selected_site else None},
+        "privacy": {
+            "protected": False,
+            "excluded_sites": list(INDIVIDUAL_ACTIVITY_PRIVATE_SITES),
+        },
+        "summary": {
+            "episodes": len(detected),
+            "active": active,
+            "sites": len({item["site"] for item in detected}),
+            "excess_requests": excess,
+            "longest_days": max(
+                (item["duration_days"] for item in detected), default=0
+            ),
+            "kinds": dict(kinds),
+        },
+        "narrative": narrative,
+        "episodes": detected,
     })
 
 

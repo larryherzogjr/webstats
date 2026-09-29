@@ -90,6 +90,7 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(self.client.get("/briefings").status_code, 200)
         self.assertEqual(self.client.get("/changes").status_code, 200)
         self.assertEqual(self.client.get("/content").status_code, 200)
+        self.assertEqual(self.client.get("/episodes").status_code, 200)
         self.assertEqual(self.client.get("/pulse").status_code, 200)
         self.assertEqual(self.client.get("/errors").status_code, 200)
         self.assertEqual(self.client.get("/journeys").status_code, 200)
@@ -1006,6 +1007,113 @@ Disallow: /blocked
         self.assertEqual(private["totals"]["analyzed_pages"], 0)
         self.assertEqual(private["dark_matter"], [])
         self.assertIn("privacy boundary", private["narrative"])
+
+    def test_attention_episodes_reconstruct_and_attribute_a_burst(self):
+        with connect(self.config.storage.db_path) as conn:
+            site_id = site_id_map(conn)["example.com"]
+            baseline_start = datetime(2026, 8, 23).date()
+            rows = []
+            for offset in range(28):
+                day = (baseline_start + timedelta(days=offset)).isoformat()
+                rows.append((site_id, day, 2, 2, 200, 2, 0))
+            rows.extend((
+                (site_id, "2026-09-20", 12, 7, 1200, 10, 2),
+                (site_id, "2026-09-21", 6, 5, 600, 6, 0),
+            ))
+            for offset in range(8):
+                day = (datetime(2026, 9, 22).date() + timedelta(days=offset)).isoformat()
+                rows.append((site_id, day, 2, 2, 200, 2, 0))
+            conn.executemany(
+                """
+                INSERT OR REPLACE INTO daily_filter(
+                    site_id, day, include_bots, include_assets, requests,
+                    unique_visitors, bytes, status_2xx, status_3xx,
+                    status_4xx, status_5xx
+                ) VALUES (?, ?, 0, 0, ?, ?, ?, ?, 0, ?, 0)
+                """,
+                rows,
+            )
+            conn.executemany(
+                """
+                INSERT INTO daily_page_status(
+                    site_id, day, path, status, requests, human_requests,
+                    nonasset_requests, human_nonasset_requests
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    (site_id, "2026-09-19", "/launch", 200, 2, 2, 2, 2),
+                    (site_id, "2026-09-20", "/launch", 200, 10, 10, 10, 10),
+                    (site_id, "2026-09-20", "/missing", 404, 2, 2, 2, 2),
+                    (site_id, "2026-09-21", "/launch", 200, 6, 6, 6, 6),
+                ),
+            )
+            conn.executemany(
+                """
+                INSERT INTO daily_page_referrer(
+                    site_id, day, path, referrer_host, requests,
+                    human_requests, nonasset_requests, human_nonasset_requests
+                ) VALUES (?, ?, '/launch', 'news.example', ?, ?, ?, ?)
+                """,
+                (
+                    (site_id, "2026-09-19", 1, 1, 1, 1),
+                    (site_id, "2026-09-20", 8, 8, 8, 8),
+                ),
+            )
+            conn.execute(
+                """
+                INSERT INTO daily_country(
+                    site_id, day, country, requests, human_requests,
+                    nonasset_requests, human_nonasset_requests
+                ) VALUES (?, '2026-09-20', 'US', 10, 10, 10, 10)
+                """,
+                (site_id,),
+            )
+            conn.execute(
+                """
+                INSERT INTO daily_page_agent(
+                    site_id, day, path, ua_family, is_bot, requests, asset_requests
+                ) VALUES (?, '2026-09-20', '/launch', 'GPTBot', 1, 4, 0)
+                """,
+                (site_id,),
+            )
+            conn.execute(
+                """
+                INSERT INTO events(
+                    site_id, kind, event_key, occurred_at, day, path, source
+                ) VALUES (?, 'new_referrer', 'episode-referrer', 1790000000,
+                          '2026-09-20', '/launch', 'news.example')
+                """,
+                (site_id,),
+            )
+            conn.execute("INSERT INTO sites(name) VALUES ('ad-fontes.app')")
+            conn.commit()
+        self.authenticate()
+
+        response = self.client.get(
+            "/api/episodes?from=2026-09-20&to=2026-09-20&site=example.com"
+        )
+        self.assertEqual(response.status_code, 200)
+        body = response.get_json()
+        self.assertEqual(body["summary"]["episodes"], 1)
+        episode = body["episodes"][0]
+        self.assertEqual(episode["start"], "2026-09-20")
+        self.assertEqual(episode["end"], "2026-09-21")
+        self.assertEqual(episode["peak_requests"], 12)
+        self.assertEqual(episode["kind"], "referral-wave")
+        self.assertEqual(episode["drivers"]["pages"][0]["path"], "/launch")
+        self.assertEqual(
+            episode["drivers"]["referrers"][0]["source"], "news.example"
+        )
+        self.assertEqual(episode["drivers"]["errors"]["requests"], 2)
+        self.assertEqual(episode["drivers"]["crawlers"][0]["agent"], "GPTBot")
+        self.assertEqual(episode["lasting_effect"], "returned")
+        self.assertTrue(episode["narrative"])
+
+        private = self.client.get(
+            "/api/episodes?site=ad-fontes.app"
+        ).get_json()
+        self.assertTrue(private["privacy"]["protected"])
+        self.assertEqual(private["episodes"], [])
 
     def test_almanac_records_streaks_milestones_and_calendar(self):
         with connect(self.config.storage.db_path) as conn:

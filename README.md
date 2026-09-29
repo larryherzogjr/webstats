@@ -41,6 +41,10 @@ log paths, retention, timezone, and log format all live in TOML configuration.
   preceding equal-length window and attributes movement to pages, referrers,
   countries, bots, AI crawlers, feed readers, and errors, with direct links to
   the relevant drill-downs.
+- Attention Episodes that detect statistically unusual human traffic, join
+  related surge days, reconstruct the rise, peak, decay, and following week,
+  and attribute the episode to pages, referrers, countries, recognized
+  crawlers, errors, and Automatic Moments without manual annotations.
 - A Content Observatory that discovers same-site HTTPS sitemaps automatically,
   identifies never-observed, crawler-only, quiet, and crawler-heavy pages,
   measures search and AI coverage, finds active pages outside the published
@@ -109,6 +113,14 @@ Link Atlas and the Change Engine use permanent daily aggregates, so they
 continue to work after raw-log retention expires without adding a migration or
 a visitor identifier. `ad-fontes.app` intentionally logs no referrer and is
 shown as privacy-protected rather than as a misleading empty result.
+
+Attention Episodes use a 28-day adaptive baseline. A trigger must reach at
+least five human page requests, twice its preceding average, two population
+standard deviations above that average, and three requests above baseline.
+Triggers no more than two days apart are joined, decay is followed for up to
+seven days, and the following week is classified as returned, sustained, or
+not yet resolved. Attribution is descriptive rather than causal. The feature
+uses existing permanent daily rollups and excludes privacy-protected sites.
 
 The AI Policy Observatory keeps no policy archive. It caches current public
 `robots.txt` responses in application memory for 15 minutes and compares those
@@ -301,6 +313,7 @@ All routes require the admin session except `/api/health`:
 - `GET /api/almanac?year=&site=&bots=0&assets=0`
 - `GET /api/briefing?week=YYYY-MM-DD` (the week must begin on Monday)
 - `GET /api/pulse?site=&limit=`
+- `GET /api/episodes?from=&to=&site=&limit=`
 - `GET /api/errors?site=&days=7|30|90&limit=`
 - `GET /api/journeys?from=&to=&site=`
 - `GET /api/link-atlas?from=&to=&site=&source=&limit=`

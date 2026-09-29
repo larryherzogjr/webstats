@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+{% block title %}Attention Episodes | Webstats{% endblock %}
+{% block page_id %}episodes{% endblock %}
+{% block body_data %} data-default-days="90"{% endblock %}
+{% block content %}
+<div class="page-heading">
+  <div><p class="eyebrow">When ordinary traffic becomes a story</p><h1>Attention Episodes</h1></div>
+  <p id="range-label" class="range-label"></p>
+</div>
+{% include "_filters.html" %}
+<div id="page-error" class="alert hidden" role="alert"></div>
+<div id="episodes-privacy" class="alert hidden" role="status"></div>
+<section class="panel episodes-hero">
+  <div class="panel-heading">
+    <div><p class="eyebrow">Automatic reconstruction</p><h2 id="episodes-heading">Looking for unusual attention</h2></div>
+    <span class="legend-note">28-day adaptive baseline · no manual annotations</span>
+  </div>
+  <p id="episodes-narrative" class="episode-lead"></p>
+</section>
+<section id="episodes-metrics" class="metric-grid" aria-label="Episode summary"></section>
+<section class="panel episode-index-panel">
+  <div class="panel-heading">
+    <div><p class="eyebrow">Rise · peak · decay · aftermath</p><h2>Reconstructed episodes</h2></div>
+    <span class="legend-note">Human page requests only</span>
+  </div>
+  <div id="episodes-list" class="episodes-list" aria-live="polite"></div>
+</section>
+<p class="muted methodology-note">An episode begins when a site's human page traffic clears an adaptive threshold derived from the preceding 28 days: at least five requests, twice baseline, two standard deviations above baseline, and three requests above baseline. Nearby trigger days are joined, the decay is followed for up to seven days, and the following week is compared with the old baseline. Driver attribution uses permanent daily rollups; it is descriptive, not a claim of causation. Privacy-protected sites are excluded.</p>
+{% endblock %}
