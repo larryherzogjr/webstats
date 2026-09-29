@@ -41,9 +41,13 @@ class RollupTests(unittest.TestCase):
         )
         insert_requests(self.conn, [row])
         recompute_day(self.conn, "2026-09-28")
-        first = tuple(self.conn.execute("SELECT * FROM daily_site").fetchone())
+        first = tuple(self.conn.execute(
+            "SELECT * FROM daily_filter WHERE include_bots=1 AND include_assets=1"
+        ).fetchone())
         recompute_day(self.conn, "2026-09-28")
-        second = tuple(self.conn.execute("SELECT * FROM daily_site").fetchone())
+        second = tuple(self.conn.execute(
+            "SELECT * FROM daily_filter WHERE include_bots=1 AND include_assets=1"
+        ).fetchone())
         self.assertEqual(first, second)
 
     def test_performance_rollup_separates_application_health_from_probes(self):
@@ -126,7 +130,7 @@ class RollupTests(unittest.TestCase):
         ).fetchone()
         self.assertEqual(tuple(start), (2, 1, 1))
 
-    def test_privacy_protected_site_has_no_journey_rollup(self):
+    def test_ad_fontes_participates_in_journey_rollups(self):
         self.conn.execute("INSERT INTO sites(name) VALUES ('ad-fontes.app')")
         private_id = site_id_map(self.conn)["ad-fontes.app"]
         rows = [
@@ -140,13 +144,12 @@ class RollupTests(unittest.TestCase):
         ]
         insert_requests(self.conn, rows)
         recompute_day(self.conn, "2026-09-28")
-        self.assertEqual(
-            self.conn.execute(
-                "SELECT COUNT(*) FROM daily_journey WHERE site_id=?",
-                (private_id,),
-            ).fetchone()[0],
-            0,
-        )
+        summary = self.conn.execute(
+            "SELECT sessions, pageviews, path_steps FROM daily_journey "
+            "WHERE site_id=?",
+            (private_id,),
+        ).fetchone()
+        self.assertEqual(tuple(summary), (1, 2, 2))
 
     def test_retention_keeps_rollup(self):
         old_day = (date.today() - timedelta(days=200)).isoformat()
@@ -158,7 +161,62 @@ class RollupTests(unittest.TestCase):
         insert_requests(self.conn, [row])
         maintain_rollups(self.conn, 90)
         self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM requests").fetchone()[0], 0)
-        self.assertEqual(self.conn.execute("SELECT requests FROM daily_site WHERE day=?", (old_day,)).fetchone()[0], 1)
+        self.assertEqual(
+            self.conn.execute(
+                "SELECT requests FROM daily_filter WHERE day=? "
+                "AND include_bots=1 AND include_assets=1",
+                (old_day,),
+            ).fetchone()[0],
+            1,
+        )
+        self.assertEqual(
+            self.conn.execute(
+                "SELECT state FROM rollup_days WHERE day=?", (old_day,)
+            ).fetchone()[0],
+            "sealed",
+        )
+
+    def test_late_request_cannot_replace_a_sealed_day(self):
+        old_day = (date.today() - timedelta(days=200)).isoformat()
+        site_id = site_id_map(self.conn)["example.com"]
+        rows = [
+            (
+                f"complete-{index}", f"complete-fingerprint-{index}",
+                site_id, index + 1, old_day, f"visitor-{index}", "GET",
+                "/history", None, 200, 10, None, None, "Mozilla/5.0",
+                "Other browser", "Other", 0, 0, None,
+            )
+            for index in range(5)
+        ]
+        insert_requests(self.conn, rows)
+        maintain_rollups(self.conn, 90, {old_day})
+
+        late = (
+            "late-source", "late-fingerprint", site_id, 100, old_day,
+            "late-visitor", "GET", "/late", None, 200, 10, None, None,
+            "Mozilla/5.0", "Other browser", "Other", 0, 0, None,
+        )
+        insert_requests(self.conn, [late])
+        maintain_rollups(self.conn, 90, {old_day})
+
+        total = self.conn.execute(
+            "SELECT requests FROM daily_filter WHERE site_id=? AND day=? "
+            "AND include_bots=1 AND include_assets=1",
+            (site_id, old_day),
+        ).fetchone()[0]
+        ledger = self.conn.execute(
+            "SELECT state, raw_requests, late_requests FROM rollup_days "
+            "WHERE day=?",
+            (old_day,),
+        ).fetchone()
+        self.assertEqual(total, 5)
+        self.assertEqual(tuple(ledger), ("sealed", 5, 1))
+        self.assertEqual(
+            self.conn.execute(
+                "SELECT COUNT(*) FROM requests WHERE day=?", (old_day,)
+            ).fetchone()[0],
+            0,
+        )
 
     def test_events_and_page_dimensions_are_idempotent(self):
         site_id = site_id_map(self.conn)["example.com"]
@@ -196,6 +254,15 @@ class RollupTests(unittest.TestCase):
             "SELECT day, path, country FROM events WHERE kind='new_referrer'"
         ).fetchone()
         self.assertEqual(tuple(first_referrer), ("2026-09-27", "/older-essay", "CA"))
+        page = self.conn.execute(
+            "SELECT first_seen_day, last_seen_day, first_seen_at, last_seen_at "
+            "FROM pages WHERE site_id=? AND path='/essay'",
+            (site_id,),
+        ).fetchone()
+        self.assertEqual(
+            tuple(page),
+            ("2026-09-28", "2026-09-28", 1790600000, 1790600000),
+        )
         self.assertEqual(
             tuple(
                 self.conn.execute(

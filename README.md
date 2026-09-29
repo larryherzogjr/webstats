@@ -28,7 +28,6 @@ log paths, retention, timezone, and log format all live in TOML configuration.
   service or manual annotation is required.
 - A ten-second Live Radar with a rolling human activity stream, Automatic
   Moment badges, relative timestamps, and a self-contained world pulse map.
-  Privacy-sensitive sites remain visible only as anonymous aggregate totals.
 - An RSS readership view that recognizes hosted and self-hosted feed clients,
   charts explicitly reported subscription totals, and keeps unreported readers
   visible without inventing subscriber counts from fetch frequency.
@@ -65,8 +64,7 @@ log paths, retention, timezone, and log format all live in TOML configuration.
   typo-shaped requests without changing the underlying traffic history.
 - Reading Paths that infer anonymous 30-minute visits, entrances, exits,
   visit depth, and page-to-page transitions. Consecutive refreshes collapse,
-  only daily aggregates persist, and privacy-protected sites are never
-  processed into journey data.
+  and only daily aggregates persist.
 - Link Atlas for the host-level relationships between referring sites and
   destination pages, including new, rising, loyal, resurfaced, cooling, and
   dormant sources, equal-period comparisons, and source drill-downs. Full
@@ -81,7 +79,9 @@ log paths, retention, timezone, and log format all live in TOML configuration.
   signals rather than claims about intent or past policy.
 - Clickable per-page stories with permanent daily history, lifetime first and
   last sightings, referrers, AI readers, countries, and response codes.
-- Idempotent daily rollups retained after raw request pruning.
+- Idempotent daily rollups retained after raw request pruning, with an explicit
+  open/sealed-day ledger that prevents late partial logs from replacing
+  complete history.
 - Authenticated JSON APIs and responsive server-rendered pages.
 - Bookmarkable all-site or single-site scopes across Live Radar, Weekly
   Briefings, the Change Engine, Content Observatory, AI Crawlers, Feeds,
@@ -102,6 +102,16 @@ successful human, non-asset request, ignore common probe paths, and preserve
 only the first sighting. Aggregate moments are rebuilt deterministically, so
 ingest and backfill reruns cannot duplicate them.
 
+The second-generation SQLite layout separates temporary request facts from
+permanent analytics. `pages` is the canonical first/last-sighting registry,
+`daily_filter` is the canonical site summary for the four bot/asset scopes, and
+the other daily tables retain only their typed dimensions. Composite-key
+aggregate tables use `WITHOUT ROWID`. `rollup_days` records whether each day is
+open or sealed; a sealed day is never rebuilt from late partial raw input.
+`daily_site` and `daily_traffic` were removed because they duplicated
+`daily_filter`. See [`docs/STORAGE.md`](docs/STORAGE.md) for the lifecycle,
+privacy-at-collection, backup, and recovery model.
+
 RSS subscriber totals are deliberately conservative. Inoreader and some other
 services include an explicit subscriber count in their fetcher user agent;
 Webstats records that reported number. Readers such as current Feedly identify
@@ -110,17 +120,11 @@ feed requests but labels the subscriber total as unreported. A shared fetch is
 not treated as one person, and repeated fetches are never used as a proxy for
 subscriber growth.
 
-The Live Radar always excludes `ad-fontes.app` from individual activity and
-country results at the API layer. Its aggregate request, visitor, and bandwidth
-totals remain available without exposing paths, timestamps, or geography.
-Reading Paths applies the same boundary earlier: `ad-fontes.app` requests are
-excluded while daily journey rollups are built, so no visit sequence or
-transition for that site is stored or returned.
-
 Link Atlas and the Change Engine use permanent daily aggregates, so they
 continue to work after raw-log retention expires without adding a migration or
-a visitor identifier. `ad-fontes.app` intentionally logs no referrer and is
-shown as privacy-protected rather than as a misleading empty result.
+a visitor identifier. `ad-fontes.app` participates normally in authenticated
+analytics, but its dedicated nginx format never records query strings or
+referrers. OAuth codes and passage queries therefore never enter Webstats.
 
 Attention Episodes use a 28-day adaptive baseline. A trigger must reach at
 least five human page requests, twice its preceding average, two population
@@ -128,7 +132,7 @@ standard deviations above that average, and three requests above baseline.
 Triggers no more than two days apart are joined, decay is followed for up to
 seven days, and the following week is classified as returned, sustained, or
 not yet resolved. Attribution is descriptive rather than causal. The feature
-uses existing permanent daily rollups and excludes privacy-protected sites.
+uses existing permanent daily rollups.
 
 Performance timing uses nginx's `$request_time`, converted to milliseconds at
 ingest. The built-in `combined_host` parser accepts both the new timed suffix
@@ -136,7 +140,7 @@ and legacy untimed lines, so current and rotated logs can coexist safely.
 Successful human, non-asset GET requests feed permanent daily latency and
 response-size summaries. Latency naturally begins after the timed nginx format
 is installed; migration rebuilds response-size and error history from retained
-raw rows. Performance details exclude privacy-protected sites.
+raw rows.
 
 The AI Policy Observatory caches current public `robots.txt` responses in
 application memory for 15 minutes and compares those current rules with the
@@ -153,7 +157,6 @@ capped at eight seconds, 24 sitemap documents, and 10,000 page URLs per site.
 Current sitemap inventories are held in application memory for 30 minutes by
 the interactive Observatory. The scheduled Chronicle stores compact inventory
 state and changes, not complete sitemap documents or new visitor identifiers.
-Page-level traffic comparisons remain disabled for privacy-protected sites.
 
 The Chronicle observer runs twice daily by default. It accepts only bounded,
 same-site HTTPS sitemap discovery. When a page leaves an available sitemap, it
@@ -161,7 +164,7 @@ probes at most 64 removed URLs per site per run without following redirects, so
 it can distinguish a same-site redirect, HTTP 404/410 disappearance, and an
 unlisted page that remains reachable. An unavailable sitemap never causes a
 mass-removal event. Public inventory changes are retained for all configured
-sites; page-level crawler reactions remain hidden for privacy-protected sites.
+sites.
 
 ## Fresh installation in 14 steps
 
@@ -359,8 +362,7 @@ Dates use `YYYY-MM-DD`. Visitor-day totals are sums of daily unique hashes. They
 deliberately do not identify the same visitor across days. Site detail views use
 hourly buckets automatically when a single day is selected.
 Cross-property endpoints accept an optional `site=` query parameter and reject
-unknown sites. Live Radar never returns individual activity or geography for a
-privacy-protected site, even when that site is selected explicitly.
+unknown sites.
 
 ## Troubleshooting
 

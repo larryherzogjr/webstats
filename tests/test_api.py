@@ -180,6 +180,10 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(body["logs"][0]["id"], "log-1")
         self.assertNotIn(str(self.log), response.get_data(as_text=True))
         self.assertIsNone(body["last_chronicle"])
+        self.assertIsNotNone(body["rollups"]["latest_day"])
+        self.assertGreaterEqual(body["rollups"]["open_days"], 1)
+        self.assertEqual(body["rollups"]["sealed_days"], 0)
+        self.assertEqual(body["rollups"]["late_requests"], 0)
 
     def test_overview_defaults_to_humans_without_assets(self):
         self.authenticate()
@@ -257,7 +261,7 @@ class ApiTests(unittest.TestCase):
             [("2026-09-27", 0), ("2026-09-28", 2), ("2026-09-29", 0)],
         )
 
-    def test_live_radar_activity_geography_and_private_site_exclusion(self):
+    def test_live_radar_includes_ad_fontes_activity(self):
         with connect(self.config.storage.db_path) as conn:
             row = conn.execute(
                 "SELECT ts, day FROM requests WHERE path='/one'"
@@ -303,30 +307,68 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(site_totals["ad-fontes.app"], 1)
         self.assertEqual(
             [(item["site"], item["path"]) for item in body["activity"]],
-            [("example.com", "/one")],
+            [("ad-fontes.app", "/reader/private"), ("example.com", "/one")],
         )
-        self.assertIn("new_page", body["activity"][0]["moments"])
-        self.assertIn("traffic_record", body["activity"][0]["moments"])
+        example_activity = next(
+            item for item in body["activity"] if item["site"] == "example.com"
+        )
+        self.assertIn("new_page", example_activity["moments"])
+        self.assertIn("traffic_record", example_activity["moments"])
         self.assertEqual(
             body["countries"],
-            [{"country": "US", "requests": 1, "visitors": 1}],
+            [
+                {"country": "GB", "requests": 1, "visitors": 1},
+                {"country": "US", "requests": 1, "visitors": 1},
+            ],
         )
         self.assertEqual(
             body["totals"],
-            {"requests": 1, "visitors": 1, "countries": 1, "sites": 1},
+            {"requests": 2, "visitors": 2, "countries": 2, "sites": 2},
         )
         self.assertEqual(
             body["privacy"],
-            {"excluded_activity_sites": ["ad-fontes.app"]},
+            {"excluded_activity_sites": []},
         )
         self.assertEqual(private["scope"], {"site": "ad-fontes.app"})
         self.assertEqual(private["sites"][0]["requests"], 1)
-        self.assertEqual(private["activity"], [])
-        self.assertEqual(private["countries"], [])
-        self.assertEqual(private["totals"]["requests"], 0)
+        self.assertEqual(private["activity"][0]["path"], "/reader/private")
+        self.assertEqual(private["countries"][0]["country"], "GB")
+        self.assertEqual(private["totals"]["requests"], 1)
         self.assertEqual(scoped["scope"], {"site": "example.com"})
         self.assertEqual([row["site"] for row in scoped["sites"]], ["example.com"])
         self.assertEqual(scoped["activity"][0]["site"], "example.com")
+
+    def test_ad_fontes_page_analytics_are_not_suppressed(self):
+        with connect(self.config.storage.db_path) as conn:
+            site_id = conn.execute(
+                "INSERT INTO sites(name) VALUES ('ad-fontes.app')"
+            ).lastrowid
+            insert_requests(conn, [(
+                "ad-fontes-page", "ad-fontes-page-fingerprint", site_id,
+                1790586900, "2026-09-28", "reader", "GET", "/reader/essay",
+                None, 200, 42, None, None, "Mozilla/5.0", "Other browser",
+                "Other", 0, 0, "US",
+            )])
+            recompute_day(conn, "2026-09-28")
+            conn.commit()
+        self.authenticate()
+
+        events = self.client.get(
+            "/api/events?from=2026-09-28&to=2026-09-28"
+            "&site=ad-fontes.app"
+        ).get_json()
+        pages = self.client.get(
+            "/api/site/ad-fontes.app/pages?from=2026-09-28&to=2026-09-28"
+        ).get_json()
+        journeys = self.client.get(
+            "/api/journeys?from=2026-09-28&to=2026-09-28"
+            "&site=ad-fontes.app"
+        ).get_json()
+
+        self.assertEqual(events["events"][0]["path"], "/reader/essay")
+        self.assertEqual(pages["pages"][0]["path"], "/reader/essay")
+        self.assertEqual(journeys["totals"]["sessions"], 1)
+        self.assertFalse(journeys["privacy"]["protected"])
 
     def test_detail_endpoints_match_hand_count(self):
         self.authenticate()
@@ -653,12 +695,12 @@ class ApiTests(unittest.TestCase):
         private = self.client.get(
             "/api/link-atlas?site=ad-fontes.app"
         ).get_json()
-        self.assertTrue(private["privacy"]["protected"])
+        self.assertFalse(private["privacy"]["protected"])
         self.assertEqual(private["sources"], [])
         private_inbox = self.client.get(
             "/api/inbox?site=ad-fontes.app"
         ).get_json()
-        self.assertTrue(private_inbox["privacy"]["protected"])
+        self.assertFalse(private_inbox["privacy"]["protected"])
         self.assertEqual(private_inbox["events"], [])
         self.assertEqual(
             self.client.get("/api/link-atlas?source=missing.example").status_code,
@@ -810,7 +852,7 @@ class ApiTests(unittest.TestCase):
         private = self.client.get(
             "/api/galaxy?site=ad-fontes.app"
         ).get_json()
-        self.assertTrue(private["privacy"]["protected"])
+        self.assertFalse(private["privacy"]["protected"])
         self.assertEqual(private["nodes"], [])
         self.assertEqual(
             self.client.get("/api/galaxy?site=unknown.example").status_code,
@@ -1063,11 +1105,10 @@ Disallow: /blocked
             private = self.client.get(
                 "/api/content-observatory?site=ad-fontes.app"
             ).get_json()
-        self.assertTrue(private["privacy"]["protected"])
+        self.assertFalse(private["privacy"]["protected"])
         self.assertEqual(private["totals"]["published_pages"], 1)
-        self.assertEqual(private["totals"]["analyzed_pages"], 0)
-        self.assertEqual(private["dark_matter"], [])
-        self.assertIn("privacy boundary", private["narrative"])
+        self.assertEqual(private["totals"]["analyzed_pages"], 1)
+        self.assertEqual(private["dark_matter"][0]["path"], "/private-reading")
 
     def test_attention_episodes_reconstruct_and_attribute_a_burst(self):
         with connect(self.config.storage.db_path) as conn:
@@ -1173,7 +1214,7 @@ Disallow: /blocked
         private = self.client.get(
             "/api/episodes?site=ad-fontes.app"
         ).get_json()
-        self.assertTrue(private["privacy"]["protected"])
+        self.assertFalse(private["privacy"]["protected"])
         self.assertEqual(private["episodes"], [])
 
     def test_reliability_detects_regressions_bursts_and_scanner_noise(self):
@@ -1253,7 +1294,7 @@ Disallow: /blocked
         private = self.client.get(
             "/api/reliability?site=ad-fontes.app"
         ).get_json()
-        self.assertTrue(private["privacy"]["protected"])
+        self.assertFalse(private["privacy"]["protected"])
         self.assertEqual(private["incidents"], [])
 
     def test_almanac_records_streaks_milestones_and_calendar(self):
@@ -1655,8 +1696,8 @@ Disallow: /blocked
         page_journey = page.get_json()["journey"]
         self.assertEqual(page_journey["entrances"], 2)
         self.assertEqual(page_journey["next"][0]["path"], "/two")
-        self.assertTrue(private.get_json()["privacy"]["protected"])
-        self.assertEqual(private.get_json()["totals"]["sessions"], 0)
+        self.assertFalse(private.get_json()["privacy"]["protected"])
+        self.assertEqual(private.get_json()["totals"]["sessions"], 1)
         self.assertEqual(unknown.status_code, 404)
 
     def test_invalid_range_is_rejected(self):

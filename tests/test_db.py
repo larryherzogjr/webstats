@@ -34,6 +34,10 @@ class DatabaseMigrationTests(unittest.TestCase):
                         "SELECT name FROM sqlite_master WHERE type='table'"
                     )
                 }
+                aggregate_sql = conn.execute(
+                    "SELECT sql FROM sqlite_master WHERE type='table' "
+                    "AND name='daily_page_status'"
+                ).fetchone()[0]
             self.assertEqual(version, SCHEMA_VERSION)
             self.assertIn("source_fingerprint", columns)
             self.assertIn("request_time_ms", columns)
@@ -45,8 +49,43 @@ class DatabaseMigrationTests(unittest.TestCase):
                     "daily_journey_endpoint", "daily_journey_transition", "events",
                     "daily_performance", "daily_reliability",
                     "chronicle_snapshots", "chronicle_pages", "chronicle_events",
+                    "rollup_days", "pages",
                 } <= tables
             )
+            self.assertNotIn("daily_site", tables)
+            self.assertNotIn("daily_traffic", tables)
+            self.assertIn("WITHOUT ROWID", aggregate_sql)
+
+    def test_version_eight_adds_lifecycle_tables_and_removes_duplicates(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            with connect(root / "test.db") as conn:
+                for statement in SCHEMA.split(";"):
+                    if statement.strip():
+                        conn.execute(statement)
+                conn.execute("DELETE FROM schema_version")
+                conn.execute("INSERT INTO schema_version VALUES (8)")
+                conn.execute(
+                    "CREATE TABLE daily_site(site_id, day, requests)"
+                )
+                conn.execute(
+                    "CREATE TABLE daily_traffic(site_id, day, requests)"
+                )
+                conn.commit()
+                initialize(conn, self.config(root))
+                tables = {
+                    row["name"] for row in conn.execute(
+                        "SELECT name FROM sqlite_master WHERE type='table'"
+                    )
+                }
+                version = conn.execute(
+                    "SELECT version FROM schema_version"
+                ).fetchone()[0]
+            self.assertEqual(version, SCHEMA_VERSION)
+            self.assertIn("rollup_days", tables)
+            self.assertIn("pages", tables)
+            self.assertNotIn("daily_site", tables)
+            self.assertNotIn("daily_traffic", tables)
 
     def test_version_six_adds_request_timing_and_performance_rollups(self):
         with tempfile.TemporaryDirectory() as temp:

@@ -228,6 +228,7 @@ def health():
     site_count = 0
     request_count = 0
     last_chronicle = None
+    rollups = None
     try:
         with _conn() as conn:
             row = conn.execute(
@@ -249,6 +250,17 @@ def health():
             ).fetchone()
             if chronicle and chronicle["captured_at"]:
                 last_chronicle = dict(chronicle)
+            rollup = conn.execute(
+                """
+                SELECT MAX(day) latest_day,
+                       SUM(state='open') open_days,
+                       SUM(state='sealed') sealed_days,
+                       COALESCE(SUM(late_requests),0) late_requests
+                FROM rollup_days
+                """
+            ).fetchone()
+            if rollup and rollup["latest_day"]:
+                rollups = dict(rollup)
     except sqlite3.Error:
         pass
     logs = [
@@ -272,6 +284,7 @@ def health():
             "status": "ok" if ok else "degraded",
             "last_ingest": last_run,
             "last_chronicle": last_chronicle,
+            "rollups": rollups,
             "database_bytes": db_path.stat().st_size if db_path.exists() else 0,
             "sites": site_count,
             "raw_requests": request_count,
@@ -3315,11 +3328,15 @@ def overview():
                 (start, end, bots, assets),
             )
         ]
-        bot_totals = conn.execute(
+        traffic_totals = conn.execute(
             """
-            SELECT COALESCE(SUM(CASE WHEN is_bot=1 THEN requests ELSE 0 END),0),
-                   COALESCE(SUM(requests),0)
-            FROM daily_traffic WHERE day BETWEEN ? AND ?
+            SELECT COALESCE(SUM(CASE
+                       WHEN include_bots=1 AND include_assets=1
+                       THEN requests ELSE 0 END), 0) total_requests,
+                   COALESCE(SUM(CASE
+                       WHEN include_bots=0 AND include_assets=1
+                       THEN requests ELSE 0 END), 0) human_requests
+            FROM daily_filter WHERE day BETWEEN ? AND ?
             """,
             (start, end),
         ).fetchone()
@@ -3351,7 +3368,11 @@ def overview():
         "error_rate": round(
             100 * (client_errors + server_errors) / max(1, total_requests), 2
         ),
-        "bot_share": round(100 * bot_totals[0] / max(1, bot_totals[1]), 2),
+        "bot_share": round(
+            100 * (traffic_totals["total_requests"] - traffic_totals["human_requests"])
+            / max(1, traffic_totals["total_requests"]),
+            2,
+        ),
     }
     return jsonify({"from": start, "to": end, "sites": cards, "timeseries": series, "totals": totals})
 

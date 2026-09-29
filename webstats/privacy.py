@@ -1,3 +1,8 @@
-"""Central privacy boundaries shared by aggregation and presentation layers."""
+"""Optional application-layer activity suppression.
 
-INDIVIDUAL_ACTIVITY_PRIVATE_SITES = ("ad-fontes.app",)
+No configured site currently needs this extra boundary.  Ad Fontes is protected
+at collection time by nginx's query-free, referrer-free log format and otherwise
+participates in the authenticated dashboard like every other site.
+"""
+
+INDIVIDUAL_ACTIVITY_PRIVATE_SITES: tuple[str, ...] = ()

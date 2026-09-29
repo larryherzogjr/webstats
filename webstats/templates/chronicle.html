@@ -54,5 +54,5 @@
   </div>
   <div class="table-wrap"><table><thead><tr><th>Observed</th><th>Site</th><th>Status</th><th>Policy fingerprint</th><th>Rules</th></tr></thead><tbody id="chronicle-policies"></tbody></table></div>
 </section>
-<p class="muted methodology-note">The Chronicle takes bounded snapshots of public sitemap and robots policy state. It stores compact changes, not full sitemap copies. When a page leaves a sitemap, Webstats probes at most 64 removed URLs per site and scan to distinguish a redirect, a 404/410 disappearance, and an unlisted but reachable page. Network failures never mark every page removed. Crawler reactions use permanent daily rollups; page-level reactions remain hidden for privacy-protected sites.</p>
+<p class="muted methodology-note">The Chronicle takes bounded snapshots of public sitemap and robots policy state. It stores compact changes, not full sitemap copies. When a page leaves a sitemap, Webstats probes at most 64 removed URLs per site and scan to distinguish a redirect, a 404/410 disappearance, and an unlisted but reachable page. Network failures never mark every page removed. Crawler reactions use permanent daily rollups.</p>
 {% endblock %}

@@ -175,7 +175,9 @@ class BackfillTests(unittest.TestCase):
             run(str(config_path))
             with sqlite3.connect(root / "test.db") as conn:
                 original = conn.execute(
-                    "SELECT requests FROM daily_site WHERE day='2026-09-27'"
+                    "SELECT requests FROM daily_filter "
+                    "WHERE day='2026-09-27' "
+                    "AND include_bots=1 AND include_assets=1"
                 ).fetchone()[0]
                 self.assertEqual(original, 1)
                 self.assertEqual(
@@ -195,7 +197,9 @@ class BackfillTests(unittest.TestCase):
             with sqlite3.connect(root / "test.db") as conn:
                 self.assertEqual(
                     conn.execute(
-                        "SELECT requests FROM daily_site WHERE day='2026-09-27'"
+                        "SELECT requests FROM daily_filter "
+                        "WHERE day='2026-09-27' "
+                        "AND include_bots=1 AND include_assets=1"
                     ).fetchone()[0],
                     1,
                 )

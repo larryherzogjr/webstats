@@ -76,7 +76,8 @@ def run(config_path: str) -> IngestStats:
     protected_days = {
         row["day"]
         for row in conn.execute(
-            "SELECT DISTINCT day FROM daily_site WHERE day < ?", (cutoff,)
+            "SELECT day FROM rollup_days WHERE state='sealed' AND day < ?",
+            (cutoff,),
         )
     }
     protected_lines = 0

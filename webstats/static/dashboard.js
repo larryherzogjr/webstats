@@ -1228,10 +1228,8 @@
       ].join("");
       renderWorldRadar(data.countries);
       renderLiveStream(data.activity);
-      const excluded = data.privacy.excluded_activity_sites.join(", ");
-      document.querySelector("#live-privacy").textContent = scopeSite && data.privacy.excluded_activity_sites.includes(scopeSite)
-        ? `${scopeSite} is privacy-protected. Only anonymous aggregate totals are shown; its activity stream and map remain hidden.`
-        : `${excluded} contributes only anonymous site totals and is excluded from this activity stream and map.`;
+      document.querySelector("#live-privacy").textContent =
+        "Visitor counts use daily rotating IP hashes; raw IP addresses are never stored.";
     } catch (error) { showError(error); }
   }
 

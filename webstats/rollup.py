@@ -9,9 +9,6 @@ from typing import Iterable, Optional
 from zoneinfo import ZoneInfo
 
 from .bots import AI_AGENTS, classify_feed_reader
-from .privacy import INDIVIDUAL_ACTIVITY_PRIVATE_SITES
-
-
 VISITOR_MILESTONES = (
     100, 250, 500, 1_000, 2_500, 5_000, 10_000, 25_000, 50_000,
     100_000, 250_000, 500_000, 1_000_000,
@@ -38,22 +35,56 @@ def maintain_rollups(
     timezone_name: str = "UTC",
 ) -> None:
     today = datetime.now(ZoneInfo(timezone_name)).date()
+    cutoff = (today - timedelta(days=retention_days)).isoformat()
     if affected_days is None:
         days = {row[0] for row in conn.execute("SELECT DISTINCT day FROM requests")}
     else:
         days = set(affected_days)
         days.update({today.isoformat(), (today - timedelta(days=1)).isoformat()})
-    for day in days:
+    sealed = {
+        row["day"] for row in conn.execute(
+            "SELECT day FROM rollup_days WHERE state='sealed'"
+        )
+    }
+    for day in sorted(days):
+        if day in sealed:
+            late = conn.execute(
+                "SELECT COUNT(*) FROM requests WHERE day=?", (day,)
+            ).fetchone()[0]
+            if late:
+                conn.execute(
+                    "UPDATE rollup_days SET late_requests=late_requests+? WHERE day=?",
+                    (late, day),
+                )
+            continue
         recompute_day(conn, day)
+        raw_requests = conn.execute(
+            "SELECT COUNT(*) FROM requests WHERE day=?", (day,)
+        ).fetchone()[0]
+        state = "sealed" if day < cutoff else "open"
+        conn.execute(
+            """
+            INSERT INTO rollup_days(day, state, rolled_up_at, raw_requests)
+            VALUES (?, ?, unixepoch(), ?)
+            ON CONFLICT(day) DO UPDATE SET
+                state=excluded.state,
+                rolled_up_at=excluded.rolled_up_at,
+                raw_requests=excluded.raw_requests
+            """,
+            (day, state, raw_requests),
+        )
     _refresh_summary_moments(conn, timezone_name)
-    cutoff = (today - timedelta(days=retention_days)).isoformat()
+    conn.execute(
+        "UPDATE rollup_days SET state='sealed' WHERE day<? AND state='open'",
+        (cutoff,),
+    )
     conn.execute("DELETE FROM requests WHERE day < ?", (cutoff,))
     conn.commit()
 
 
 def recompute_day(conn: sqlite3.Connection, day: str) -> None:
     tables = (
-        "daily_site", "daily_traffic", "daily_filter", "daily_path",
+        "daily_filter", "daily_path",
         "daily_referrer", "daily_page_referrer", "daily_agent",
         "daily_page_agent", "daily_page_country", "daily_page_status",
         "daily_feed_reader", "daily_country", "daily_status", "daily_404",
@@ -62,17 +93,6 @@ def recompute_day(conn: sqlite3.Connection, day: str) -> None:
     )
     for table in tables:
         conn.execute(f"DELETE FROM {table} WHERE day = ?", (day,))
-    conn.execute(
-        """
-        INSERT INTO daily_site
-        SELECT site_id, day, COUNT(*), SUM(is_bot=0), SUM(is_bot=1),
-               COUNT(DISTINCT CASE WHEN is_bot=0 THEN ip_hash END), SUM(bytes),
-               SUM(status BETWEEN 200 AND 299), SUM(status BETWEEN 300 AND 399),
-               SUM(status BETWEEN 400 AND 499), SUM(status BETWEEN 500 AND 599)
-        FROM requests WHERE day=? GROUP BY site_id, day
-        """,
-        (day,),
-    )
     for include_bots in (0, 1):
         for include_assets in (0, 1):
             clauses = ["day=?"]
@@ -93,17 +113,6 @@ def recompute_day(conn: sqlite3.Connection, day: str) -> None:
                 """,
                 (include_bots, include_assets, day),
             )
-    conn.execute(
-        """
-        INSERT INTO daily_traffic
-        SELECT site_id, day, is_bot, is_asset, COUNT(*), COUNT(DISTINCT ip_hash),
-               SUM(bytes), SUM(status BETWEEN 200 AND 299),
-               SUM(status BETWEEN 300 AND 399), SUM(status BETWEEN 400 AND 499),
-               SUM(status BETWEEN 500 AND 599)
-        FROM requests WHERE day=? GROUP BY site_id, day, is_bot, is_asset
-        """,
-        (day,),
-    )
     conn.execute(
         """
         INSERT INTO daily_404
@@ -203,6 +212,7 @@ def recompute_day(conn: sqlite3.Connection, day: str) -> None:
     _refresh_feed_readers_for_day(conn, day)
     _refresh_journeys_for_day(conn, day)
     _refresh_events_for_day(conn, day)
+    _refresh_pages_for_day(conn, day)
 
 
 def _percentile(values: list[int], percentile: float) -> Optional[int]:
@@ -315,11 +325,10 @@ def _refresh_performance_for_day(conn: sqlite3.Connection, day: str) -> None:
 
 def _refresh_journeys_for_day(conn: sqlite3.Connection, day: str) -> None:
     """Build anonymous 30-minute visit aggregates without retaining sessions."""
-    private = set(INDIVIDUAL_ACTIVITY_PRIVATE_SITES)
     rows = conn.execute(
         """
-        SELECT r.site_id, s.name site, r.ip_hash, r.ts, r.id, r.path
-        FROM requests r JOIN sites s ON s.id=r.site_id
+        SELECT r.site_id, r.ip_hash, r.ts, r.id, r.path
+        FROM requests r
         WHERE r.day=? AND r.is_bot=0 AND r.is_asset=0
           AND r.method='GET' AND r.status BETWEEN 200 AND 399
         ORDER BY r.site_id, r.ip_hash, r.ts, r.id
@@ -367,8 +376,6 @@ def _refresh_journeys_for_day(conn: sqlite3.Connection, day: str) -> None:
             transitions[(site_id, from_path, to_path)] += 1
 
     for row in rows:
-        if row["site"] in private:
-            continue
         key = (row["site_id"], row["ip_hash"])
         new_session = key != current_key or (last_ts and row["ts"] - last_ts > 1800)
         if new_session:
@@ -543,7 +550,7 @@ def _refresh_events_for_day(conn: sqlite3.Connection, day: str) -> None:
     for row in crawlers:
         _upsert_event(conn, row, "first_ai_visit")
 
-    pages = conn.execute(
+    page_candidates = conn.execute(
         """
         SELECT site_id, ts, day, path, NULL referrer_host,
                NULL ua_family, country
@@ -556,16 +563,15 @@ def _refresh_events_for_day(conn: sqlite3.Connection, day: str) -> None:
             WHERE r.day=? AND r.is_bot=0 AND r.is_asset=0
               AND r.method IN ('GET', 'HEAD') AND r.status BETWEEN 200 AND 399
               AND NOT EXISTS (
-                  SELECT 1 FROM daily_page_status old
-                  WHERE old.site_id=r.site_id AND old.path=r.path
-                    AND old.day < r.day AND old.status BETWEEN 200 AND 399
-                    AND old.human_nonasset_requests > 0
+                  SELECT 1 FROM pages known
+                  WHERE known.site_id=r.site_id AND known.path=r.path
+                    AND known.first_seen_day < r.day
               )
         ) WHERE position=1
         """,
         (day,),
     )
-    for row in pages:
+    for row in page_candidates:
         if _is_meaningful_page(row["path"]):
             _upsert_event(conn, row, "new_page")
 
@@ -602,6 +608,49 @@ def _refresh_events_for_day(conn: sqlite3.Connection, day: str) -> None:
                 row["occurred_at"], row["day"], row["path"], row["previous_seen"],
             ),
         )
+
+
+def _refresh_pages_for_day(conn: sqlite3.Connection, day: str) -> None:
+    """Maintain permanent first/last page sightings without scanning history."""
+    conn.execute(
+        """
+        INSERT INTO pages(
+            site_id, path, first_seen_day, last_seen_day,
+            first_seen_at, last_seen_at
+        )
+        SELECT site_id, path, day, day, MIN(ts), MAX(ts)
+        FROM requests
+        WHERE day=? AND is_bot=0 AND is_asset=0
+          AND method IN ('GET', 'HEAD') AND status BETWEEN 200 AND 399
+        GROUP BY site_id, path, day
+        ON CONFLICT(site_id, path) DO UPDATE SET
+            first_seen_at=CASE
+                WHEN excluded.first_seen_day < pages.first_seen_day
+                    THEN excluded.first_seen_at
+                WHEN excluded.first_seen_day = pages.first_seen_day
+                     AND pages.first_seen_at IS NULL
+                    THEN excluded.first_seen_at
+                WHEN excluded.first_seen_day = pages.first_seen_day
+                     AND excluded.first_seen_at IS NOT NULL
+                    THEN MIN(pages.first_seen_at, excluded.first_seen_at)
+                ELSE pages.first_seen_at
+            END,
+            last_seen_at=CASE
+                WHEN excluded.last_seen_day > pages.last_seen_day
+                    THEN excluded.last_seen_at
+                WHEN excluded.last_seen_day = pages.last_seen_day
+                     AND pages.last_seen_at IS NULL
+                    THEN excluded.last_seen_at
+                WHEN excluded.last_seen_day = pages.last_seen_day
+                     AND excluded.last_seen_at IS NOT NULL
+                    THEN MAX(pages.last_seen_at, excluded.last_seen_at)
+                ELSE pages.last_seen_at
+            END,
+            first_seen_day=MIN(pages.first_seen_day, excluded.first_seen_day),
+            last_seen_day=MAX(pages.last_seen_day, excluded.last_seen_day)
+        """,
+        (day,),
+    )
 
 
 def _is_meaningful_page(path: str) -> bool:

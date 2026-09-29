@@ -10,7 +10,7 @@ from .bots import classify_user_agent
 from .config import Config
 
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -60,23 +60,24 @@ CREATE TABLE IF NOT EXISTS ingest_runs (
     status TEXT NOT NULL,
     detail TEXT
 );
-CREATE TABLE IF NOT EXISTS daily_site (
-    site_id INTEGER NOT NULL REFERENCES sites(id), day TEXT NOT NULL,
-    requests INTEGER NOT NULL, human_requests INTEGER NOT NULL,
-    bot_requests INTEGER NOT NULL, unique_visitors INTEGER NOT NULL,
-    bytes INTEGER NOT NULL, status_2xx INTEGER NOT NULL,
-    status_3xx INTEGER NOT NULL, status_4xx INTEGER NOT NULL,
-    status_5xx INTEGER NOT NULL, PRIMARY KEY(site_id, day)
-);
-CREATE TABLE IF NOT EXISTS daily_traffic (
-    site_id INTEGER NOT NULL REFERENCES sites(id), day TEXT NOT NULL,
-    is_bot INTEGER NOT NULL, is_asset INTEGER NOT NULL,
-    requests INTEGER NOT NULL, unique_visitors INTEGER NOT NULL,
-    bytes INTEGER NOT NULL, status_2xx INTEGER NOT NULL,
-    status_3xx INTEGER NOT NULL, status_4xx INTEGER NOT NULL,
-    status_5xx INTEGER NOT NULL,
-    PRIMARY KEY(site_id, day, is_bot, is_asset)
-);
+CREATE TABLE IF NOT EXISTS rollup_days (
+    day TEXT PRIMARY KEY,
+    state TEXT NOT NULL CHECK (state IN ('open', 'sealed')),
+    rolled_up_at INTEGER NOT NULL,
+    raw_requests INTEGER NOT NULL DEFAULT 0,
+    late_requests INTEGER NOT NULL DEFAULT 0
+) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS pages (
+    site_id INTEGER NOT NULL REFERENCES sites(id),
+    path TEXT NOT NULL,
+    first_seen_day TEXT NOT NULL,
+    last_seen_day TEXT NOT NULL,
+    first_seen_at INTEGER,
+    last_seen_at INTEGER,
+    PRIMARY KEY(site_id, path)
+) WITHOUT ROWID;
+CREATE INDEX IF NOT EXISTS pages_last_seen
+    ON pages(last_seen_day DESC, site_id);
 CREATE TABLE IF NOT EXISTS daily_filter (
     site_id INTEGER NOT NULL REFERENCES sites(id), day TEXT NOT NULL,
     include_bots INTEGER NOT NULL, include_assets INTEGER NOT NULL,
@@ -85,21 +86,25 @@ CREATE TABLE IF NOT EXISTS daily_filter (
     status_3xx INTEGER NOT NULL, status_4xx INTEGER NOT NULL,
     status_5xx INTEGER NOT NULL,
     PRIMARY KEY(site_id, day, include_bots, include_assets)
-);
+) WITHOUT ROWID;
+CREATE INDEX IF NOT EXISTS daily_filter_scope_day
+    ON daily_filter(include_bots, include_assets, day, site_id);
 CREATE TABLE IF NOT EXISTS daily_path (
     site_id INTEGER NOT NULL REFERENCES sites(id), day TEXT NOT NULL,
     path TEXT NOT NULL, requests INTEGER NOT NULL,
     unique_visitors INTEGER NOT NULL, human_requests INTEGER NOT NULL,
     human_unique_visitors INTEGER NOT NULL, asset_requests INTEGER NOT NULL,
     PRIMARY KEY(site_id, day, path)
-);
+) WITHOUT ROWID;
+CREATE INDEX IF NOT EXISTS daily_path_day ON daily_path(day, site_id);
 CREATE TABLE IF NOT EXISTS daily_referrer (
     site_id INTEGER NOT NULL REFERENCES sites(id), day TEXT NOT NULL,
     referrer_host TEXT NOT NULL, requests INTEGER NOT NULL,
     human_requests INTEGER NOT NULL, nonasset_requests INTEGER NOT NULL,
     human_nonasset_requests INTEGER NOT NULL,
     PRIMARY KEY(site_id, day, referrer_host)
-);
+) WITHOUT ROWID;
+CREATE INDEX IF NOT EXISTS daily_referrer_day ON daily_referrer(day, site_id);
 CREATE TABLE IF NOT EXISTS daily_page_referrer (
     site_id INTEGER NOT NULL REFERENCES sites(id), day TEXT NOT NULL,
     path TEXT NOT NULL, referrer_host TEXT NOT NULL,
@@ -107,21 +112,26 @@ CREATE TABLE IF NOT EXISTS daily_page_referrer (
     nonasset_requests INTEGER NOT NULL,
     human_nonasset_requests INTEGER NOT NULL,
     PRIMARY KEY(site_id, day, path, referrer_host)
-);
+) WITHOUT ROWID;
+CREATE INDEX IF NOT EXISTS daily_page_referrer_day
+    ON daily_page_referrer(day, site_id);
 CREATE TABLE IF NOT EXISTS daily_agent (
     site_id INTEGER NOT NULL REFERENCES sites(id), day TEXT NOT NULL,
     ua_family TEXT NOT NULL, os_family TEXT NOT NULL,
     is_bot INTEGER NOT NULL, requests INTEGER NOT NULL,
     asset_requests INTEGER NOT NULL,
     PRIMARY KEY(site_id, day, ua_family, os_family, is_bot)
-);
+) WITHOUT ROWID;
+CREATE INDEX IF NOT EXISTS daily_agent_day ON daily_agent(day, site_id);
 CREATE TABLE IF NOT EXISTS daily_page_agent (
     site_id INTEGER NOT NULL REFERENCES sites(id), day TEXT NOT NULL,
     path TEXT NOT NULL, ua_family TEXT NOT NULL,
     is_bot INTEGER NOT NULL, requests INTEGER NOT NULL,
     asset_requests INTEGER NOT NULL,
     PRIMARY KEY(site_id, day, path, ua_family, is_bot)
-);
+) WITHOUT ROWID;
+CREATE INDEX IF NOT EXISTS daily_page_agent_day
+    ON daily_page_agent(day, site_id);
 CREATE TABLE IF NOT EXISTS daily_page_country (
     site_id INTEGER NOT NULL REFERENCES sites(id), day TEXT NOT NULL,
     path TEXT NOT NULL, country TEXT NOT NULL,
@@ -129,7 +139,9 @@ CREATE TABLE IF NOT EXISTS daily_page_country (
     nonasset_requests INTEGER NOT NULL,
     human_nonasset_requests INTEGER NOT NULL,
     PRIMARY KEY(site_id, day, path, country)
-);
+) WITHOUT ROWID;
+CREATE INDEX IF NOT EXISTS daily_page_country_day
+    ON daily_page_country(day, site_id);
 CREATE TABLE IF NOT EXISTS daily_page_status (
     site_id INTEGER NOT NULL REFERENCES sites(id), day TEXT NOT NULL,
     path TEXT NOT NULL, status INTEGER NOT NULL,
@@ -137,14 +149,18 @@ CREATE TABLE IF NOT EXISTS daily_page_status (
     nonasset_requests INTEGER NOT NULL,
     human_nonasset_requests INTEGER NOT NULL,
     PRIMARY KEY(site_id, day, path, status)
-);
+) WITHOUT ROWID;
+CREATE INDEX IF NOT EXISTS daily_page_status_history
+    ON daily_page_status(site_id, path, day, status);
+CREATE INDEX IF NOT EXISTS daily_page_status_day
+    ON daily_page_status(day, site_id);
 CREATE TABLE IF NOT EXISTS daily_feed_reader (
     site_id INTEGER NOT NULL REFERENCES sites(id), day TEXT NOT NULL,
     path TEXT NOT NULL, reader TEXT NOT NULL,
     requests INTEGER NOT NULL, reported_subscribers INTEGER,
     first_seen INTEGER NOT NULL, last_seen INTEGER NOT NULL,
     PRIMARY KEY(site_id, day, path, reader)
-);
+) WITHOUT ROWID;
 CREATE INDEX IF NOT EXISTS daily_feed_reader_day
     ON daily_feed_reader(day, reader);
 CREATE TABLE IF NOT EXISTS daily_country (
@@ -153,21 +169,24 @@ CREATE TABLE IF NOT EXISTS daily_country (
     human_requests INTEGER NOT NULL, nonasset_requests INTEGER NOT NULL,
     human_nonasset_requests INTEGER NOT NULL,
     PRIMARY KEY(site_id, day, country)
-);
+) WITHOUT ROWID;
+CREATE INDEX IF NOT EXISTS daily_country_day ON daily_country(day, site_id);
 CREATE TABLE IF NOT EXISTS daily_status (
     site_id INTEGER NOT NULL REFERENCES sites(id), day TEXT NOT NULL,
     status INTEGER NOT NULL, requests INTEGER NOT NULL,
     human_requests INTEGER NOT NULL, nonasset_requests INTEGER NOT NULL,
     human_nonasset_requests INTEGER NOT NULL,
     PRIMARY KEY(site_id, day, status)
-);
+) WITHOUT ROWID;
+CREATE INDEX IF NOT EXISTS daily_status_day ON daily_status(day, site_id);
 CREATE TABLE IF NOT EXISTS daily_404 (
     site_id INTEGER NOT NULL REFERENCES sites(id), day TEXT NOT NULL,
     path TEXT NOT NULL, requests INTEGER NOT NULL,
     human_requests INTEGER NOT NULL, nonasset_requests INTEGER NOT NULL,
     human_nonasset_requests INTEGER NOT NULL,
     PRIMARY KEY(site_id, day, path)
-);
+) WITHOUT ROWID;
+CREATE INDEX IF NOT EXISTS daily_404_day ON daily_404(day, site_id);
 CREATE TABLE IF NOT EXISTS daily_performance (
     site_id INTEGER NOT NULL REFERENCES sites(id), day TEXT NOT NULL,
     path TEXT NOT NULL, requests INTEGER NOT NULL,
@@ -176,7 +195,7 @@ CREATE TABLE IF NOT EXISTS daily_performance (
     total_bytes INTEGER NOT NULL, avg_bytes INTEGER NOT NULL,
     max_bytes INTEGER NOT NULL,
     PRIMARY KEY(site_id, day, path)
-);
+) WITHOUT ROWID;
 CREATE INDEX IF NOT EXISTS daily_performance_day
     ON daily_performance(day, site_id);
 CREATE TABLE IF NOT EXISTS daily_reliability (
@@ -188,7 +207,7 @@ CREATE TABLE IF NOT EXISTS daily_reliability (
     app_5xx INTEGER NOT NULL, scanner_requests INTEGER NOT NULL,
     scanner_errors INTEGER NOT NULL,
     PRIMARY KEY(site_id, day)
-);
+) WITHOUT ROWID;
 CREATE TABLE IF NOT EXISTS daily_journey (
     site_id INTEGER NOT NULL REFERENCES sites(id), day TEXT NOT NULL,
     sessions INTEGER NOT NULL, pageviews INTEGER NOT NULL,
@@ -196,19 +215,23 @@ CREATE TABLE IF NOT EXISTS daily_journey (
     multi_page_sessions INTEGER NOT NULL, max_depth INTEGER NOT NULL,
     duration_seconds INTEGER NOT NULL,
     PRIMARY KEY(site_id, day)
-);
+) WITHOUT ROWID;
 CREATE TABLE IF NOT EXISTS daily_journey_endpoint (
     site_id INTEGER NOT NULL REFERENCES sites(id), day TEXT NOT NULL,
     path TEXT NOT NULL, entrances INTEGER NOT NULL, exits INTEGER NOT NULL,
     single_page_sessions INTEGER NOT NULL,
     PRIMARY KEY(site_id, day, path)
-);
+) WITHOUT ROWID;
+CREATE INDEX IF NOT EXISTS daily_journey_endpoint_day
+    ON daily_journey_endpoint(day, site_id);
 CREATE TABLE IF NOT EXISTS daily_journey_transition (
     site_id INTEGER NOT NULL REFERENCES sites(id), day TEXT NOT NULL,
     from_path TEXT NOT NULL, to_path TEXT NOT NULL,
     transitions INTEGER NOT NULL,
     PRIMARY KEY(site_id, day, from_path, to_path)
-);
+) WITHOUT ROWID;
+CREATE INDEX IF NOT EXISTS daily_journey_transition_day
+    ON daily_journey_transition(day, site_id);
 CREATE TABLE IF NOT EXISTS events (
     id INTEGER PRIMARY KEY,
     site_id INTEGER NOT NULL REFERENCES sites(id),
@@ -334,7 +357,11 @@ def _reclassify_retained_requests(conn: sqlite3.Connection) -> None:
 def _recompute_retained_days(conn: sqlite3.Connection) -> None:
     from .rollup import recompute_day
 
-    days = [row["day"] for row in conn.execute("SELECT DISTINCT day FROM requests")]
+    days = [
+        row["day"] for row in conn.execute(
+            "SELECT DISTINCT day FROM requests ORDER BY day"
+        )
+    ]
     for day in days:
         recompute_day(conn, day)
 
@@ -369,6 +396,62 @@ def _migrate_7_to_8(conn: sqlite3.Connection) -> None:
     _execute_schema(conn)
 
 
+def _migrate_8_to_9(conn: sqlite3.Connection) -> None:
+    """Add the second-generation lifecycle ledger and page registry.
+
+    The old site and traffic summaries duplicated information already present
+    in ``daily_filter``.  Existing installations can migrate without losing
+    history; fresh databases also get compact WITHOUT ROWID aggregate tables
+    directly from ``SCHEMA``.
+    """
+    _execute_schema(conn)
+    conn.execute(
+        """
+        INSERT OR IGNORE INTO rollup_days(
+            day, state, rolled_up_at, raw_requests, late_requests
+        )
+        SELECT f.day,
+               CASE WHEN EXISTS(
+                   SELECT 1 FROM requests r WHERE r.day=f.day
+               ) THEN 'open' ELSE 'sealed' END,
+               unixepoch(),
+               COALESCE((SELECT COUNT(*) FROM requests r WHERE r.day=f.day), 0),
+               0
+        FROM daily_filter f
+        GROUP BY f.day
+        """
+    )
+    conn.execute(
+        """
+        INSERT OR IGNORE INTO pages(
+            site_id, path, first_seen_day, last_seen_day,
+            first_seen_at, last_seen_at
+        )
+        SELECT d.site_id, d.path, MIN(d.day), MAX(d.day),
+               (
+                   SELECT MIN(r.ts) FROM requests r
+                   WHERE r.site_id=d.site_id AND r.path=d.path
+                     AND r.is_bot=0 AND r.is_asset=0
+                     AND r.method IN ('GET', 'HEAD')
+                     AND r.status BETWEEN 200 AND 399
+               ),
+               (
+                   SELECT MAX(r.ts) FROM requests r
+                   WHERE r.site_id=d.site_id AND r.path=d.path
+                     AND r.is_bot=0 AND r.is_asset=0
+                     AND r.method IN ('GET', 'HEAD')
+                     AND r.status BETWEEN 200 AND 399
+               )
+        FROM daily_page_status d
+        WHERE d.status BETWEEN 200 AND 399
+          AND d.human_nonasset_requests>0
+        GROUP BY d.site_id, d.path
+        """
+    )
+    conn.execute("DROP TABLE IF EXISTS daily_site")
+    conn.execute("DROP TABLE IF EXISTS daily_traffic")
+
+
 MIGRATIONS = {
     1: _migrate_1_to_2,
     2: _migrate_2_to_3,
@@ -377,6 +460,7 @@ MIGRATIONS = {
     5: _migrate_5_to_6,
     6: _migrate_6_to_7,
     7: _migrate_7_to_8,
+    8: _migrate_8_to_9,
 }
 
 
