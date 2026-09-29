@@ -81,6 +81,12 @@ def feed_readers():
     )
 
 
+@views_bp.get("/almanac")
+@login_required
+def almanac():
+    return render_template("almanac.html", server_today=_server_today())
+
+
 @views_bp.get("/health")
 @login_required
 def health():

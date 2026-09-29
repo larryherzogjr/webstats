@@ -9,6 +9,7 @@
   const initialState = stateFromUrl();
   let range = initialState.range;
   let pagesOffset = 0;
+  let almanacState = almanacStateFromUrl();
 
   function localDate(date) {
     const copy = new Date(date.getTime() - date.getTimezoneOffset() * 60000);
@@ -42,6 +43,18 @@
     };
   }
 
+  function almanacStateFromUrl() {
+    const params = new URLSearchParams(window.location.search);
+    const fallbackYear = Number(serverToday.slice(0, 4));
+    const parsedYear = Number(params.get("year"));
+    return {
+      year: Number.isInteger(parsedYear) && parsedYear >= 2000 && parsedYear <= fallbackYear ? parsedYear : fallbackYear,
+      site: params.get("site") || "",
+      bots: params.get("bots") === "1",
+      assets: params.get("assets") === "1",
+    };
+  }
+
   function filters() {
     return {
       bots: document.querySelector("#include-bots")?.checked ? "1" : "0",
@@ -59,6 +72,14 @@
 
   function siteQuery() {
     return new URLSearchParams({ ...range, ...filters() }).toString();
+  }
+
+  function almanacQuery() {
+    return new URLSearchParams({
+      year: String(almanacState.year),
+      site: almanacState.site,
+      ...filters(),
+    }).toString();
   }
 
   function syncUrl(push = true) {
@@ -414,6 +435,118 @@
     } catch (error) { showError(error); }
   }
 
+  function renderCalendar(data) {
+    const grid = document.querySelector("#calendar-grid");
+    const months = document.querySelector("#calendar-months");
+    const first = new Date(`${data.year}-01-01T12:00:00Z`);
+    const offset = (first.getUTCDay() + 6) % 7;
+    const maximum = Math.max(0, ...data.days.filter(row => !row.future).map(row => row.visitor_days));
+    const recordDays = new Set(data.record_breakers.map(row => row.day));
+    const blanks = Array.from({ length: offset }, () => '<span class="calendar-blank" aria-hidden="true"></span>');
+    const cells = data.days.map(row => {
+      const level = row.visitor_days === 0 || maximum === 0 ? 0 : Math.max(1, Math.ceil(4 * row.visitor_days / maximum));
+      const description = `${row.day}: ${fmt.format(row.visitor_days)} visitor-days, ${fmt.format(row.requests)} requests`;
+      const classes = ["calendar-day", `level-${level}`, row.future ? "future" : "", recordDays.has(row.day) ? "record-day" : ""].filter(Boolean).join(" ");
+      return `<button type="button" class="${classes}" role="gridcell" aria-label="${escapeHtml(description)}" title="${escapeHtml(description)}"></button>`;
+    });
+    grid.innerHTML = [...blanks, ...cells].join("");
+    const monthLabels = [];
+    for (let month = 0; month < 12; month += 1) {
+      const date = new Date(Date.UTC(data.year, month, 1, 12));
+      const dayIndex = Math.round((date - first) / 86400000);
+      const column = Math.floor((offset + dayIndex) / 7) + 1;
+      const label = date.toLocaleDateString(undefined, { month: "short", timeZone: "UTC" });
+      monthLabels.push(`<span style="grid-column:${column}">${escapeHtml(label)}</span>`);
+    }
+    months.innerHTML = monthLabels.join("");
+  }
+
+  function recordCard(label, value, detail) {
+    return `<article class="record-card"><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong><small>${escapeHtml(detail || "")}</small></article>`;
+  }
+
+  async function loadAlmanac() {
+    clearError();
+    try {
+      const data = await api(`/api/almanac?${almanacQuery()}`);
+      almanacState.year = data.year;
+      almanacState.site = data.scope.site || "";
+      document.querySelector("#almanac-scope").textContent = data.scope.label;
+      document.querySelector("#calendar-heading").textContent = `${data.year} daily visitor-days`;
+
+      const siteSelect = document.querySelector("#almanac-site");
+      siteSelect.innerHTML = ["", ...data.sites].map(name => `<option value="${escapeHtml(name)}"${name === almanacState.site ? " selected" : ""}>${escapeHtml(name || "All sites")}</option>`).join("");
+      const years = [...new Set([data.year, ...data.available_years])].sort((left, right) => right - left);
+      const yearSelect = document.querySelector("#almanac-year");
+      yearSelect.innerHTML = years.map(year => `<option value="${year}"${year === data.year ? " selected" : ""}>${year}</option>`).join("");
+
+      document.querySelector("#almanac-metrics").innerHTML = [
+        metric("All-time requests", fmt.format(data.totals.requests)),
+        metric("All-time visitor-days", fmt.format(data.totals.visitor_days)),
+        metric("Active days", fmt.format(data.totals.active_days)),
+        metric("Current streak", `${fmt.format(data.records.current)} days`),
+      ].join("");
+      renderCalendar(data);
+
+      const busiest = data.records.busiest_day;
+      const week = data.records.best_week;
+      const month = data.records.best_month;
+      document.querySelector("#record-cards").innerHTML = [
+        recordCard("Busiest day", busiest ? `${fmt.format(busiest.requests)} requests` : "No traffic yet", busiest?.day),
+        recordCard("Best week", week ? `${fmt.format(week.requests)} requests` : "No traffic yet", week ? `Week of ${week.period}` : ""),
+        recordCard("Best month", month ? `${fmt.format(month.requests)} requests` : "No traffic yet", month?.period),
+        recordCard("Longest streak", `${fmt.format(data.records.longest)} days`, data.records.longest_start ? `${data.records.longest_start} to ${data.records.longest_end}` : ""),
+        recordCard("First seen", data.totals.first_seen || "Never", "First active day"),
+        recordCard("Last seen", data.totals.last_seen || "Never", "Most recent active day"),
+      ].join("");
+
+      const next = data.milestones.next;
+      document.querySelector("#next-milestone").innerHTML = `<strong>${fmt.format(data.totals.visitor_days)} of ${fmt.format(next)} visitor-days</strong><div class="milestone-progress" aria-label="${escapeHtml(String(data.milestones.progress))}% toward next milestone"><span style="width:${Math.min(100, data.milestones.progress)}%"></span></div><small class="muted">Next milestone · ${data.milestones.progress}% complete</small>`;
+      const reached = [...data.milestones.reached].reverse();
+      document.querySelector("#milestone-list").innerHTML = reached.length
+        ? reached.slice(0, 8).map(item => `<li><strong>${fmt.format(item.value)} visitor-days</strong><time datetime="${escapeHtml(item.day)}">${escapeHtml(item.day)}</time></li>`).join("")
+        : '<li class="empty">The first milestone is still ahead.</li>';
+
+      fillTable("#record-breakers", data.record_breakers.slice(0, 20), [
+        { key: "day" },
+        { key: "requests", format: fmt.format },
+        { key: "visitor_days", format: fmt.format },
+      ], "No record days yet.");
+      fillTable("#on-this-day", data.on_this_day, [
+        { key: "day", format: value => escapeHtml(value.slice(0, 4)) },
+        { key: "requests", format: fmt.format },
+        { key: "visitor_days", format: fmt.format },
+      ], "No traffic recorded on this date in prior years.");
+    } catch (error) { showError(error); }
+  }
+
+  function setupAlmanac() {
+    const bots = document.querySelector("#include-bots");
+    const assets = document.querySelector("#include-assets");
+    bots.checked = almanacState.bots;
+    assets.checked = almanacState.assets;
+    const apply = (push = true) => {
+      almanacState = {
+        ...almanacState,
+        year: Number(document.querySelector("#almanac-year").value || almanacState.year),
+        site: document.querySelector("#almanac-site").value,
+        bots: bots.checked,
+        assets: assets.checked,
+      };
+      window.history[push ? "pushState" : "replaceState"]({}, "", `${window.location.pathname}?${almanacQuery()}`);
+      loadAlmanac();
+    };
+    document.querySelector("#apply-almanac").addEventListener("click", () => apply());
+    [bots, assets].forEach(input => input.addEventListener("change", () => apply()));
+    window.addEventListener("popstate", () => {
+      almanacState = almanacStateFromUrl();
+      bots.checked = almanacState.bots;
+      assets.checked = almanacState.assets;
+      loadAlmanac();
+    });
+    window.history.replaceState({}, "", `${window.location.pathname}?${almanacQuery()}`);
+  }
+
   async function loadHealth() {
     clearError();
     try {
@@ -452,5 +585,6 @@
   }
   if (page === "ai-crawlers") { setupFilters(loadAiCrawlers); loadAiCrawlers(); }
   if (page === "feed-readers") { setupFilters(loadFeedReaders); loadFeedReaders(); }
+  if (page === "almanac") { setupAlmanac(); loadAlmanac(); }
   if (page === "health") loadHealth();
 })();

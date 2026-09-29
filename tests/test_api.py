@@ -85,6 +85,7 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(page.status_code, 200)
         self.assertIn("/one", page.get_data(as_text=True))
         self.assertEqual(self.client.get("/site/example.com/page").status_code, 400)
+        self.assertEqual(self.client.get("/almanac").status_code, 200)
         self.assertEqual(self.client.get("/feed-readers").status_code, 200)
         self.assertEqual(self.client.get("/ai-crawlers").status_code, 200)
         self.assertEqual(self.client.get("/live").status_code, 200)
@@ -415,6 +416,91 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(sightings["Inoreader"]["peak_subscribers"], 3)
         self.assertIsNone(sightings["Feedly"]["latest_subscribers"])
         self.assertIsNone(sightings["FreshRSS"]["latest_subscribers"])
+
+    def test_almanac_records_streaks_milestones_and_calendar(self):
+        with connect(self.config.storage.db_path) as conn:
+            site_id = site_id_map(conn)["example.com"]
+            conn.executemany(
+                """
+                INSERT INTO daily_filter(
+                    site_id, day, include_bots, include_assets, requests,
+                    unique_visitors, bytes, status_2xx, status_3xx,
+                    status_4xx, status_5xx
+                ) VALUES (?, ?, 0, 0, ?, ?, ?, ?, 0, 0, 0)
+                """,
+                (
+                    (site_id, "2026-09-26", 40, 40, 4000, 40),
+                    (site_id, "2026-09-27", 30, 30, 3000, 30),
+                    (site_id, "2026-09-29", 50, 50, 5000, 50),
+                ),
+            )
+            conn.commit()
+        self.authenticate()
+
+        with patch("webstats.api.datetime", wraps=datetime) as clock:
+            clock.now.return_value = datetime(
+                2026, 9, 29, 12, tzinfo=ZoneInfo("America/Chicago")
+            )
+            response = self.client.get("/api/almanac?year=2026")
+            site_response = self.client.get(
+                "/api/almanac?year=2026&site=example.com"
+            )
+            invalid_year = self.client.get("/api/almanac?year=1999")
+            unknown_site = self.client.get(
+                "/api/almanac?site=unknown.example"
+            )
+        self.assertEqual(response.status_code, 200)
+        body = response.get_json()
+        self.assertEqual(body["scope"], {"site": None, "label": "All sites"})
+        self.assertEqual(
+            body["totals"],
+            {
+                "requests": 122,
+                "visitor_days": 122,
+                "active_days": 4,
+                "first_seen": "2026-09-26",
+                "last_seen": "2026-09-29",
+            },
+        )
+        self.assertEqual(body["records"]["busiest_day"]["day"], "2026-09-29")
+        self.assertEqual(body["records"]["best_week"]["requests"], 70)
+        self.assertEqual(body["records"]["best_week"]["period"], "2026-09-21")
+        self.assertEqual(body["records"]["best_month"]["period"], "2026-09")
+        self.assertEqual(body["records"]["current"], 4)
+        self.assertEqual(body["records"]["longest"], 4)
+        self.assertEqual(body["records"]["longest_start"], "2026-09-26")
+        self.assertEqual(body["records"]["longest_end"], "2026-09-29")
+        self.assertEqual(body["milestones"]["reached"], [{"value": 100, "day": "2026-09-29"}])
+        self.assertEqual(body["milestones"]["next"], 250)
+        self.assertEqual(body["milestones"]["progress"], 48.8)
+        self.assertEqual(len(body["days"]), 365)
+        days = {row["day"]: row for row in body["days"]}
+        self.assertEqual(days["2026-09-25"]["requests"], 0)
+        self.assertEqual(days["2026-09-29"]["visitor_days"], 50)
+        self.assertEqual(
+            [row["day"] for row in body["record_breakers"]],
+            ["2026-09-29", "2026-09-26"],
+        )
+
+        site = site_response.get_json()
+        self.assertEqual(site["scope"], {"site": "example.com", "label": "example.com"})
+        self.assertEqual(invalid_year.status_code, 400)
+        self.assertEqual(unknown_site.status_code, 404)
+
+        with connect(self.config.storage.db_path) as conn:
+            conn.execute(
+                "DELETE FROM daily_filter WHERE day='2026-09-29' "
+                "AND include_bots=0 AND include_assets=0"
+            )
+            conn.commit()
+        with patch("webstats.api.datetime", wraps=datetime) as clock:
+            clock.now.return_value = datetime(
+                2026, 9, 29, 12, tzinfo=ZoneInfo("America/Chicago")
+            )
+            through_yesterday = self.client.get(
+                "/api/almanac?year=2026"
+            ).get_json()
+        self.assertEqual(through_yesterday["records"]["current"], 3)
 
     def test_invalid_range_is_rejected(self):
         self.authenticate()

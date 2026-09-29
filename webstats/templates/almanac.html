@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+{% block title %}Traffic Almanac | Webstats{% endblock %}
+{% block page_id %}almanac{% endblock %}
+{% block content %}
+<div class="page-heading">
+  <div><p class="eyebrow">Long memory</p><h1>Traffic Almanac</h1></div>
+  <p id="almanac-scope" class="range-label">All sites</p>
+</div>
+<section class="filters almanac-controls" aria-label="Almanac filters">
+  <div class="custom-dates">
+    <label>Site <select id="almanac-site"></select></label>
+    <label>Year <select id="almanac-year"></select></label>
+    <button id="apply-almanac">Apply</button>
+  </div>
+  <div class="toggles">
+    <label class="switch"><input id="include-bots" type="checkbox"> Include bots</label>
+    <label class="switch"><input id="include-assets" type="checkbox"> Include assets</label>
+  </div>
+</section>
+<div id="page-error" class="alert hidden" role="alert"></div>
+<section id="almanac-metrics" class="metric-grid" aria-label="All-time traffic metrics"></section>
+<section class="panel calendar-panel">
+  <div class="panel-heading">
+    <div><p class="eyebrow">A year at a glance</p><h2 id="calendar-heading">Daily visitor-days</h2></div>
+    <div class="heat-legend" aria-label="Traffic intensity"><span>Less</span><i class="level-0"></i><i class="level-1"></i><i class="level-2"></i><i class="level-3"></i><i class="level-4"></i><span>More · gold dot = record day</span></div>
+  </div>
+  <div class="calendar-scroll">
+    <div class="calendar-layout">
+      <div class="calendar-weekdays" aria-hidden="true"><span>Mon</span><span></span><span>Wed</span><span></span><span>Fri</span><span></span><span>Sun</span></div>
+      <div><div id="calendar-months" class="calendar-months" aria-hidden="true"></div><div id="calendar-grid" class="calendar-grid" role="grid" aria-label="Yearly visitor-day heatmap"></div></div>
+    </div>
+  </div>
+</section>
+<div class="detail-grid almanac-grid">
+  <section class="panel">
+    <div class="panel-heading"><div><p class="eyebrow">Personal bests</p><h2>Records</h2></div></div>
+    <div id="record-cards" class="record-grid"></div>
+  </section>
+  <section class="panel">
+    <div class="panel-heading"><div><p class="eyebrow">Long game</p><h2>Milestones</h2></div></div>
+    <div id="next-milestone"></div>
+    <ol id="milestone-list" class="milestone-list"></ol>
+  </section>
+  <section class="panel">
+    <div class="panel-heading"><div><p class="eyebrow">High-water marks</p><h2>Record-breaking days</h2></div></div>
+    <div class="table-wrap"><table><thead><tr><th>Day</th><th>Requests</th><th>Visitor-days</th></tr></thead><tbody id="record-breakers"></tbody></table></div>
+  </section>
+  <section class="panel">
+    <div class="panel-heading"><div><p class="eyebrow">Echoes</p><h2>On this day</h2></div></div>
+    <div class="table-wrap"><table><thead><tr><th>Year</th><th>Requests</th><th>Visitor-days</th></tr></thead><tbody id="on-this-day"></tbody></table></div>
+  </section>
+</div>
+{% endblock %}

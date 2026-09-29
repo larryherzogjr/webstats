@@ -23,6 +23,8 @@ log paths, retention, timezone, and log format all live in TOML configuration.
 - An RSS readership view that recognizes hosted and self-hosted feed clients,
   charts explicitly reported subscription totals, and keeps unreported readers
   visible without inventing subscriber counts from fetch frequency.
+- A Traffic Almanac with site and server-wide year heatmaps, all-time records,
+  active-day streaks, record-breaking days, and visitor-day milestones.
 - Clickable per-page stories with permanent daily history, lifetime first and
   last sightings, referrers, AI readers, countries, and response codes.
 - Idempotent daily rollups retained after raw request pruning.
@@ -221,6 +223,7 @@ All routes require the admin session except `/api/health`:
 - `GET /api/site/<name>/page?path=/requested/path`
 - `GET /api/events`, `/ai-crawlers`
 - `GET /api/feed-readers`
+- `GET /api/almanac?year=&site=&bots=0&assets=0`
 - `GET /api/live?minutes=60`
 - `GET /api/health`
 

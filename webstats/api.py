@@ -62,6 +62,18 @@ def _date_range() -> tuple[str, str]:
     return start.isoformat(), end.isoformat()
 
 
+def _year_arg() -> int:
+    config = current_app.config["WEBSTATS_CONFIG"]
+    current_year = datetime.now(ZoneInfo(config.server.timezone)).year
+    try:
+        year = int(request.args.get("year", current_year))
+    except (TypeError, ValueError):
+        raise ApiError("year must be an integer")
+    if year < 2000 or year > current_year:
+        raise ApiError(f"year must be between 2000 and {current_year}")
+    return year
+
+
 def _day_buckets(start: str, end: str) -> list[str]:
     current = date.fromisoformat(start)
     final = date.fromisoformat(end)
@@ -336,6 +348,184 @@ def feed_readers():
         "sightings": rows[:limit],
         "totals": totals,
         "limited": len(rows) > limit,
+    })
+
+
+def _streaks(active: list[date], today: date) -> dict[str, Any]:
+    longest = 0
+    longest_start = None
+    longest_end = None
+    run = 0
+    run_start = None
+    previous = None
+    for day in active:
+        if previous is not None and day == previous + timedelta(days=1):
+            run += 1
+        else:
+            run = 1
+            run_start = day
+        if run > longest:
+            longest = run
+            longest_start = run_start
+            longest_end = day
+        previous = day
+
+    active_set = set(active)
+    current = 0
+    # Today is incomplete; a streak through yesterday remains current until
+    # the day ends, while any traffic today naturally extends it.
+    cursor = today if today in active_set else today - timedelta(days=1)
+    while cursor in active_set:
+        current += 1
+        cursor -= timedelta(days=1)
+    return {
+        "current": current,
+        "longest": longest,
+        "longest_start": longest_start.isoformat() if longest_start else None,
+        "longest_end": longest_end.isoformat() if longest_end else None,
+    }
+
+
+def _best_period(totals: dict[str, dict[str, int]]) -> Optional[dict[str, Any]]:
+    if not totals:
+        return None
+    period, values = min(
+        totals.items(), key=lambda item: (-item[1]["requests"], item[0])
+    )
+    return {"period": period, **values}
+
+
+@api_bp.get("/almanac")
+@login_required
+def almanac():
+    config = current_app.config["WEBSTATS_CONFIG"]
+    today = datetime.now(ZoneInfo(config.server.timezone)).date()
+    year = _year_arg()
+    bots, assets = _flags()
+    requested_site = request.args.get("site", "").strip()
+
+    with _conn() as conn:
+        site = _site(conn, requested_site) if requested_site else None
+        site_clause = "AND f.site_id=?" if site else ""
+        parameters: tuple[Any, ...] = (bots, assets)
+        if site:
+            parameters += (site["id"],)
+        rows = [
+            dict(row)
+            for row in conn.execute(
+                f"""
+                SELECT f.day, SUM(f.requests) requests,
+                       SUM(f.unique_visitors) visitor_days
+                FROM daily_filter f
+                WHERE f.include_bots=? AND f.include_assets=? {site_clause}
+                GROUP BY f.day HAVING SUM(f.requests)>0 ORDER BY f.day
+                """,
+                parameters,
+            )
+        ]
+        sites = [row["name"] for row in conn.execute("SELECT name FROM sites ORDER BY name")]
+
+    values = {row["day"]: row for row in rows}
+    year_start = date(year, 1, 1)
+    year_end = date(year, 12, 31)
+    days = []
+    cursor = year_start
+    while cursor <= year_end:
+        stored = values.get(cursor.isoformat(), {})
+        days.append({
+            "day": cursor.isoformat(),
+            "requests": stored.get("requests", 0),
+            "visitor_days": stored.get("visitor_days", 0),
+            "future": cursor > today,
+        })
+        cursor += timedelta(days=1)
+
+    dated = [(date.fromisoformat(row["day"]), row) for row in rows]
+    active = [day for day, _ in dated]
+    streaks = _streaks(active, today)
+    busiest = None
+    if rows:
+        busiest = min(rows, key=lambda row: (-row["requests"], row["day"]))
+
+    weeks: dict[str, dict[str, int]] = defaultdict(
+        lambda: {"requests": 0, "visitor_days": 0}
+    )
+    months: dict[str, dict[str, int]] = defaultdict(
+        lambda: {"requests": 0, "visitor_days": 0}
+    )
+    record_breakers = []
+    record = -1
+    cumulative_visitors = 0
+    milestone_targets = [
+        100, 250, 500, 1000, 2500, 5000, 10000, 25000, 50000,
+        100000, 250000, 500000, 1000000,
+    ]
+    reached = []
+    target_index = 0
+    for day, row in dated:
+        week_start = day - timedelta(days=day.weekday())
+        week = weeks[week_start.isoformat()]
+        month = months[day.strftime("%Y-%m")]
+        for bucket in (week, month):
+            bucket["requests"] += row["requests"]
+            bucket["visitor_days"] += row["visitor_days"]
+        if row["requests"] > record:
+            record = row["requests"]
+            record_breakers.append({
+                "day": row["day"],
+                "requests": row["requests"],
+                "visitor_days": row["visitor_days"],
+            })
+        cumulative_visitors += row["visitor_days"]
+        while (
+            target_index < len(milestone_targets)
+            and cumulative_visitors >= milestone_targets[target_index]
+        ):
+            reached.append({
+                "value": milestone_targets[target_index],
+                "day": row["day"],
+            })
+            target_index += 1
+
+    total_visitors = sum(row["visitor_days"] for row in rows)
+    next_target = next(
+        (target for target in milestone_targets if target > total_visitors), None
+    )
+    if next_target is None:
+        next_target = ((total_visitors // 1_000_000) + 1) * 1_000_000
+    month_day = today.strftime("-%m-%d")
+    on_this_day = [row for row in rows if row["day"].endswith(month_day)]
+    available_years = sorted(
+        {date.fromisoformat(row["day"]).year for row in rows} | {today.year},
+        reverse=True,
+    )
+    totals = {
+        "requests": sum(row["requests"] for row in rows),
+        "visitor_days": total_visitors,
+        "active_days": len(rows),
+        "first_seen": rows[0]["day"] if rows else None,
+        "last_seen": rows[-1]["day"] if rows else None,
+    }
+    return jsonify({
+        "scope": {"site": requested_site or None, "label": requested_site or "All sites"},
+        "sites": sites,
+        "year": year,
+        "available_years": available_years,
+        "days": days,
+        "totals": totals,
+        "records": {
+            "busiest_day": busiest,
+            "best_week": _best_period(weeks),
+            "best_month": _best_period(months),
+            **streaks,
+        },
+        "milestones": {
+            "reached": reached,
+            "next": next_target,
+            "progress": round(100 * total_visitors / next_target, 1),
+        },
+        "record_breakers": list(reversed(record_breakers)),
+        "on_this_day": on_this_day,
     })
 
 
