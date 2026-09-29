@@ -54,6 +54,7 @@ class ApiTests(unittest.TestCase):
 
     def authenticate(self):
         with self.client.session_transaction() as session:
+            session.permanent = True
             session["authenticated"] = True
             session["credential_token"] = _credential_token(self.config)
 
@@ -113,6 +114,7 @@ class ApiTests(unittest.TestCase):
         app.config.update(TESTING=True, SESSION_COOKIE_SECURE=False)
         client = app.test_client()
         with client.session_transaction() as session:
+            session.permanent = True
             session["authenticated"] = True
             session["credential_token"] = _credential_token(config)
         response = client.get("/site/example.com")
@@ -128,6 +130,12 @@ class ApiTests(unittest.TestCase):
             server=replace(self.config.server, admin_user="new-admin"),
         )
         self.app.config["WEBSTATS_CONFIG"] = changed
+        self.assertEqual(self.client.get("/").status_code, 302)
+
+    def test_nonpermanent_legacy_session_is_invalidated(self):
+        with self.client.session_transaction() as session:
+            session["authenticated"] = True
+            session["credential_token"] = _credential_token(self.config)
         self.assertEqual(self.client.get("/").status_code, 302)
 
     def test_health_is_public_and_safe(self):

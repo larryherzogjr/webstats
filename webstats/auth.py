@@ -32,8 +32,10 @@ def login_required(view: F) -> F:
     def wrapped(*args, **kwargs):
         config = current_app.config["WEBSTATS_CONFIG"]
         token = session.get("credential_token", "")
-        authenticated = session.get("authenticated") and hmac.compare_digest(
-            token, _credential_token(config)
+        authenticated = (
+            session.permanent
+            and session.get("authenticated")
+            and hmac.compare_digest(token, _credential_token(config))
         )
         if not authenticated:
             session.clear()
