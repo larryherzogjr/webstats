@@ -12,7 +12,7 @@ from webstats.app import create_app
 from webstats.api import _referrer_group
 from webstats.auth import _attempts, _credential_token
 from webstats.config import Config, GeoIPConfig, ServerConfig, SiteConfig, StorageConfig
-from webstats.db import connect, site_id_map
+from webstats.db import connect, insert_requests, site_id_map
 from webstats.ingest import ingest_once
 
 
@@ -182,6 +182,63 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(
             [(row["day"], row["requests"]) for row in series],
             [("2026-09-27", 0), ("2026-09-28", 2), ("2026-09-29", 0)],
+        )
+
+    def test_live_radar_activity_geography_and_private_site_exclusion(self):
+        with connect(self.config.storage.db_path) as conn:
+            row = conn.execute(
+                "SELECT ts, day FROM requests WHERE path='/one'"
+            ).fetchone()
+            conn.execute("UPDATE requests SET country='US' WHERE path='/one'")
+            example_id = site_id_map(conn)["example.com"]
+            conn.execute(
+                """
+                INSERT INTO events(
+                    site_id, kind, event_key, occurred_at, day, value
+                ) VALUES (?, 'traffic_record', 'live-record', ?, ?, 12)
+                """,
+                (example_id, row["ts"], row["day"]),
+            )
+            private_id = conn.execute(
+                "INSERT INTO sites(name) VALUES ('ad-fontes.app')"
+            ).lastrowid
+            insert_requests(
+                conn,
+                [(
+                    "private-live", "private-live-fingerprint", private_id,
+                    row["ts"] + 1, row["day"], "private-visitor", "GET",
+                    "/reader/private", None, 200, 42, None, None,
+                    "Mozilla/5.0 AppleWebKit/537.36 Chrome/128.0 Safari/537.36",
+                    "Chrome", "Other", 0, 0, "GB",
+                )],
+            )
+            conn.commit()
+            now = datetime.fromtimestamp(row["ts"] + 30, ZoneInfo("UTC"))
+
+        self.authenticate()
+        with patch("webstats.api.datetime", wraps=datetime) as clock:
+            clock.now.return_value = now
+            body = self.client.get("/api/live?minutes=60&limit=20").get_json()
+
+        site_totals = {item["site"]: item["requests"] for item in body["sites"]}
+        self.assertEqual(site_totals["ad-fontes.app"], 1)
+        self.assertEqual(
+            [(item["site"], item["path"]) for item in body["activity"]],
+            [("example.com", "/one")],
+        )
+        self.assertIn("new_page", body["activity"][0]["moments"])
+        self.assertIn("traffic_record", body["activity"][0]["moments"])
+        self.assertEqual(
+            body["countries"],
+            [{"country": "US", "requests": 1, "visitors": 1}],
+        )
+        self.assertEqual(
+            body["totals"],
+            {"requests": 1, "visitors": 1, "countries": 1, "sites": 1},
+        )
+        self.assertEqual(
+            body["privacy"],
+            {"excluded_activity_sites": ["ad-fontes.app"]},
         )
 
     def test_detail_endpoints_match_hand_count(self):

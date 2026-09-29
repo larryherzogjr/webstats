@@ -3,15 +3,41 @@
 {% block page_id %}live{% endblock %}
 {% block content %}
 <div class="page-heading">
-  <div><p class="eyebrow"><span class="pulse"></span> Refreshes every minute</p><h1>Last 60 minutes</h1></div>
+  <div><p class="eyebrow"><span class="pulse"></span> Refreshes every 10 seconds</p><h1>Live radar</h1></div>
   <p id="live-updated" class="range-label"></p>
 </div>
-<section class="filters compact">
-  <div class="toggles">
-    <label class="switch"><input id="include-bots" type="checkbox"> Include bots</label>
-    <label class="switch"><input id="include-assets" type="checkbox"> Include assets</label>
-  </div>
-</section>
 <div id="page-error" class="alert hidden" role="alert"></div>
+<section class="metric-grid" id="live-metrics" aria-label="Live traffic metrics"></section>
 <section id="live-cards" class="site-grid" aria-live="polite"></section>
+<div class="live-layout">
+  <section class="panel radar-panel">
+    <div class="panel-heading">
+      <div><p class="eyebrow">Recent geography</p><h2>World pulse</h2></div>
+      <span class="legend-note">Successful human page visits</span>
+    </div>
+    <svg id="world-radar" class="world-radar" viewBox="0 0 1000 500" role="img" aria-label="Recent visits by country">
+      <g class="radar-grid" aria-hidden="true">
+        <path d="M0 125H1000M0 250H1000M0 375H1000M250 0V500M500 0V500M750 0V500" />
+      </g>
+      <g class="radar-land" aria-hidden="true">
+        <path d="M66 94 112 54 198 42 286 67 321 105 289 139 253 148 230 190 191 210 151 190 130 158 87 143Z" />
+        <path d="M221 219 274 231 309 283 297 343 268 417 235 386 220 322 198 263Z" />
+        <path d="M443 102 493 70 588 71 649 90 727 80 821 111 896 146 870 190 801 197 756 175 701 204 646 185 601 157 548 166 501 139 463 145Z" />
+        <path d="M470 176 536 166 586 204 607 268 570 349 526 374 490 316 463 240Z" />
+        <path d="M791 326 849 304 904 334 915 379 863 403 811 383Z" />
+        <path d="M322 43 367 23 402 42 384 80 343 86Z" />
+      </g>
+      <g id="live-map-pulses"></g>
+    </svg>
+    <div id="live-country-list" class="country-chips" aria-live="polite"></div>
+  </section>
+  <section class="panel live-stream-panel">
+    <div class="panel-heading">
+      <div><p class="eyebrow">Right now</p><h2>Human activity</h2></div>
+      <span class="legend-note">Successful pages, no assets</span>
+    </div>
+    <ol id="live-stream" class="live-stream" aria-live="polite"></ol>
+    <p id="live-privacy" class="methodology-note"></p>
+  </section>
+</div>
 {% endblock %}

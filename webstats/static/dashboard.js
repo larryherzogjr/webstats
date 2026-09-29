@@ -416,12 +416,121 @@
     } catch (error) { showError(error); }
   }
 
+  const countryPoints = {
+    AD: [1.6, 42.5], AE: [54.4, 24.4], AF: [67.7, 33.9], AL: [20.2, 41.2],
+    AR: [-64, -34], AT: [14.6, 47.5], AU: [134, -25], AZ: [47.6, 40.1],
+    BD: [90.4, 23.7], BE: [4.7, 50.8], BG: [25.5, 42.7], BH: [50.6, 26],
+    BO: [-64.7, -16.7], BR: [-51.9, -14.2], CA: [-106, 56], CH: [8.2, 46.8],
+    CL: [-71.5, -35.7], CN: [104, 35], CO: [-74.3, 4.6], CR: [-84, 9.7],
+    CY: [33.4, 35.1], CZ: [15.5, 49.8], DE: [10.5, 51.2], DK: [9.5, 56.3],
+    DO: [-70.2, 18.7], DZ: [1.7, 28], EC: [-78.2, -1.8], EE: [25, 58.6],
+    EG: [30.8, 26.8], ES: [-3.7, 40.5], FI: [26, 64], FR: [2.2, 46.2],
+    GB: [-3, 55], GE: [43.4, 42.3], GH: [-1, 7.9], GP: [-61.6, 16.2],
+    GR: [21.8, 39.1], GT: [-90.2, 15.8], GY: [-58.9, 4.9], HK: [114.2, 22.3],
+    HR: [15.2, 45.1], HU: [19.5, 47.2], ID: [117.3, -2.5], IE: [-8, 53.4],
+    IL: [34.9, 31.5], IN: [78.9, 20.6], IQ: [43.7, 33.2], IR: [53.7, 32.4],
+    IS: [-19, 65], IT: [12.6, 42.8], JM: [-77.3, 18.1], JO: [36.2, 31.2],
+    JP: [138.3, 36.2], KE: [37.9, .2], KH: [104.9, 12.6], KR: [128, 36.5],
+    KW: [47.5, 29.3], KZ: [66.9, 48], LB: [35.9, 33.9], LK: [80.8, 7.9],
+    LT: [23.9, 55.2], LU: [6.1, 49.8], LV: [24.6, 57], MA: [-7.1, 31.8],
+    MX: [-102.6, 23.6], MY: [101.7, 4.2], NG: [8.7, 9.1], NL: [5.3, 52.1],
+    NO: [8.5, 60.5], NZ: [174.9, -40.9], OM: [55.9, 21.5], PA: [-80.8, 8.5],
+    PE: [-75, -9.2], PH: [121.8, 12.9], PK: [69.3, 30.4], PL: [19.1, 51.9],
+    PR: [-66.6, 18.2], PT: [-8.2, 39.4], PY: [-58.4, -23.4], QA: [51.2, 25.4],
+    RO: [24.9, 45.9], RS: [21, 44], RU: [100, 61], SA: [45.1, 23.9],
+    SE: [18.6, 60.1], SG: [103.8, 1.4], SI: [14.8, 46.2], SK: [19.7, 48.7],
+    TH: [100.9, 15.9], TN: [9.5, 33.9], TR: [35.2, 39], TW: [121, 23.7],
+    UA: [31.2, 48.4], US: [-98, 39], UY: [-55.8, -32.5], UZ: [64.6, 41.4],
+    VE: [-66.6, 6.4], VN: [108.3, 14.1], ZA: [24, -29], ZW: [29.2, -19],
+  };
+  const countryNames = typeof Intl.DisplayNames === "function"
+    ? new Intl.DisplayNames(undefined, { type: "region" })
+    : null;
+  function countryName(code) {
+    try { return countryNames?.of(code) || code; } catch (_error) { return code; }
+  }
+
+  function countryFlag(code) {
+    return /^[A-Z]{2}$/.test(code)
+      ? String.fromCodePoint(...[...code].map(letter => 127397 + letter.charCodeAt(0)))
+      : "🌐";
+  }
+
+  function relativeAge(timestamp) {
+    const seconds = Math.max(0, Math.floor(Date.now() / 1000 - timestamp));
+    if (seconds < 10) return "just now";
+    if (seconds < 60) return `${seconds}s ago`;
+    const minutes = Math.floor(seconds / 60);
+    if (minutes < 60) return `${minutes}m ago`;
+    return `${Math.floor(minutes / 60)}h ago`;
+  }
+
+  function updateLiveAges() {
+    document.querySelectorAll("[data-live-ts]").forEach(node => {
+      node.textContent = relativeAge(Number(node.dataset.liveTs));
+    });
+  }
+
+  function renderWorldRadar(countries) {
+    const pulses = document.querySelector("#live-map-pulses");
+    if (!pulses) return;
+    pulses.innerHTML = countries.flatMap(country => {
+      const point = countryPoints[country.country];
+      if (!point) return [];
+      const [longitude, latitude] = point;
+      const x = (longitude + 180) * 1000 / 360;
+      const y = (90 - latitude) * 500 / 180;
+      const radius = Math.min(8, 3.5 + Math.sqrt(country.requests));
+      const title = `${countryName(country.country)}: ${fmt.format(country.requests)} visits`;
+      return [`<g class="radar-pulse" transform="translate(${x.toFixed(1)} ${y.toFixed(1)})"><title>${escapeHtml(title)}</title><circle class="radar-wave" r="${radius}"></circle><circle class="radar-core" r="${Math.max(2.5, radius / 2)}"></circle></g>`];
+    }).join("");
+    const list = document.querySelector("#live-country-list");
+    list.innerHTML = countries.length
+      ? countries.slice(0, 8).map(country => `<span title="${escapeHtml(countryName(country.country))}">${countryFlag(country.country)} ${escapeHtml(country.country)} <strong>${fmt.format(country.requests)}</strong></span>`).join("")
+      : '<span class="muted">No located visits in this window.</span>';
+  }
+
+  function renderLiveStream(activity) {
+    const stream = document.querySelector("#live-stream");
+    if (!activity.length) {
+      stream.innerHTML = '<li class="empty">The radar is quiet right now.</li>';
+      return;
+    }
+    const momentBadges = {
+      new_page: ["page", "New page"],
+      new_referrer: ["referrer", "New referrer"],
+      traffic_record: ["record", "Record"],
+      traffic_spike: ["spike", "Spike"],
+      visitor_milestone: ["milestone", "Milestone"],
+    };
+    stream.innerHTML = activity.map(hit => {
+      const detail = [hit.country ? `${countryFlag(hit.country)} ${hit.country}` : null, hit.browser, hit.referrer_host ? `via ${hit.referrer_host}` : null].filter(Boolean).join(" · ");
+      const badges = hit.moments.map(kind => momentBadges[kind])
+        .filter(Boolean)
+        .map(([style, label]) => `<span class="moment-chip ${style}">${label}</span>`)
+        .join("");
+      const params = new URLSearchParams({ from: hit.day, to: hit.day, bots: "0", assets: "0", path: hit.path });
+      const href = `/site/${encodeURIComponent(hit.site)}/page?${params}`;
+      return `<li class="live-hit"><span class="live-hit-dot"></span><div><div class="live-hit-heading"><a href="${escapeHtml(href)}">${escapeHtml(hit.path)}</a>${badges}</div><p>${escapeHtml(hit.site)}${detail ? ` · ${escapeHtml(detail)}` : ""}</p></div><time datetime="${escapeHtml(new Date(hit.ts * 1000).toISOString())}" data-live-ts="${hit.ts}">${escapeHtml(relativeAge(hit.ts))}</time></li>`;
+    }).join("");
+  }
+
   async function loadLive() {
     clearError();
     try {
-      const data = await api(`/api/live?${new URLSearchParams(filters())}&minutes=60`);
+      const data = await api("/api/live?minutes=60&limit=40");
       document.querySelector("#live-updated").textContent = `Updated ${new Date(data.generated_at * 1000).toLocaleTimeString()}`;
       document.querySelector("#live-cards").innerHTML = data.sites.map(site => `<a class="site-card" href="/site/${encodeURIComponent(site.site)}"><span class="site-name">${escapeHtml(site.site)}</span><strong class="site-value">${fmt.format(site.requests)}</strong><span class="site-meta"><span>${fmt.format(site.unique_visitors)} visitors</span><span>${compactBytes(site.bytes)}</span></span></a>`).join("");
+      document.querySelector("#live-metrics").innerHTML = [
+        metric("Human page visits", fmt.format(data.totals.requests)),
+        metric("Recent visitors", fmt.format(data.totals.visitors)),
+        metric("Countries", fmt.format(data.totals.countries)),
+        metric("Active sites", fmt.format(data.totals.sites)),
+      ].join("");
+      renderWorldRadar(data.countries);
+      renderLiveStream(data.activity);
+      const excluded = data.privacy.excluded_activity_sites.join(", ");
+      document.querySelector("#live-privacy").textContent = `${excluded} contributes only anonymous site totals and is excluded from this activity stream and map.`;
     } catch (error) { showError(error); }
   }
 
@@ -634,9 +743,11 @@
   }
   if (page === "page") { setupFilters(loadPage); loadPage(); }
   if (page === "live") {
-    document.querySelectorAll("#include-bots, #include-assets").forEach(input => input.addEventListener("change", loadLive));
     loadLive();
-    window.setInterval(loadLive, 60000);
+    window.setInterval(updateLiveAges, 1000);
+    window.setInterval(() => {
+      if (document.visibilityState === "visible") loadLive();
+    }, 10000);
   }
   if (page === "ai-crawlers") { setupFilters(loadAiCrawlers); loadAiCrawlers(); }
   if (page === "feed-readers") { setupFilters(loadFeedReaders); loadFeedReaders(); }

@@ -21,6 +21,11 @@ from .db import connect
 
 api_bp = Blueprint("api", __name__, url_prefix="/api")
 
+# This application's access log intentionally omits referrers and may contain
+# sensitive reading activity. It can contribute anonymous totals, but never
+# individual Live Radar rows or country pulses.
+LIVE_PRIVATE_SITES = ("ad-fontes.app",)
+
 
 def _conn() -> sqlite3.Connection:
     config = current_app.config["WEBSTATS_CONFIG"]
@@ -1010,8 +1015,11 @@ def agents(name: str):
 @login_required
 def live():
     minutes = _int_arg("minutes", 60, 1, 1440)
+    limit = _int_arg("limit", 40, 1, 100)
     bots, assets = _flags()
-    cutoff = int(datetime.now(timezone.utc).timestamp()) - minutes * 60
+    generated_at = int(datetime.now(timezone.utc).timestamp())
+    cutoff = generated_at - minutes * 60
+    private_placeholders = ",".join("?" for _ in LIVE_PRIVATE_SITES)
     with _conn() as conn:
         rows = [
             dict(row)
@@ -1027,4 +1035,109 @@ def live():
                 (cutoff, bots, assets),
             )
         ]
-    return jsonify({"minutes": minutes, "sites": rows, "generated_at": int(datetime.now(timezone.utc).timestamp())})
+        recent = [
+            dict(row)
+            for row in conn.execute(
+                f"""
+                SELECT r.id, r.site_id, s.name site, r.ts, r.day, r.path,
+                       r.status, r.ua_family browser, r.os_family,
+                       r.country, r.referrer_host
+                FROM requests r JOIN sites s ON s.id=r.site_id
+                WHERE r.ts>=? AND r.is_bot=0 AND r.is_asset=0
+                  AND r.method IN ('GET', 'HEAD')
+                  AND r.status BETWEEN 200 AND 399
+                  AND s.name NOT IN ({private_placeholders})
+                ORDER BY r.ts DESC, r.id DESC LIMIT ?
+                """,
+                (cutoff, *LIVE_PRIVATE_SITES, limit),
+            )
+        ]
+        exact_moments: dict[tuple[int, int, str], list[str]] = defaultdict(list)
+        for row in conn.execute(
+            f"""
+            SELECT e.site_id, e.occurred_at, e.path, e.kind
+            FROM events e JOIN sites s ON s.id=e.site_id
+            WHERE e.occurred_at>=? AND e.path IS NOT NULL
+              AND e.kind IN ('new_page', 'new_referrer')
+              AND s.name NOT IN ({private_placeholders})
+            ORDER BY e.occurred_at
+            """,
+            (cutoff, *LIVE_PRIVATE_SITES),
+        ):
+            exact_moments[(row["site_id"], row["occurred_at"], row["path"])].append(
+                row["kind"]
+            )
+        daily_moments: dict[tuple[int, str], list[str]] = defaultdict(list)
+        activity_days = sorted({row["day"] for row in recent})
+        if activity_days:
+            day_placeholders = ",".join("?" for _ in activity_days)
+            for row in conn.execute(
+                f"""
+                SELECT e.site_id, e.day, e.kind
+                FROM events e JOIN sites s ON s.id=e.site_id
+                WHERE e.day IN ({day_placeholders})
+                  AND e.kind IN (
+                      'traffic_record', 'traffic_spike', 'visitor_milestone'
+                  )
+                  AND s.name NOT IN ({private_placeholders})
+                ORDER BY e.occurred_at, e.id
+                """,
+                (*activity_days, *LIVE_PRIVATE_SITES),
+            ):
+                daily_moments[(row["site_id"], row["day"])].append(row["kind"])
+        activity = []
+        assigned_daily_moments: set[tuple[int, str]] = set()
+        for row in recent:
+            item = dict(row)
+            item.pop("id")
+            day_key = (row["site_id"], row["day"])
+            moments = list(exact_moments.get(
+                (row["site_id"], row["ts"], row["path"]), []
+            ))
+            if day_key not in assigned_daily_moments:
+                moments.extend(daily_moments.get(day_key, []))
+                assigned_daily_moments.add(day_key)
+            item["moments"] = moments
+            item.pop("site_id")
+            activity.append(item)
+        country_rows = [
+            dict(row)
+            for row in conn.execute(
+                f"""
+                SELECT r.country, COUNT(*) requests,
+                       COUNT(DISTINCT r.ip_hash) visitors
+                FROM requests r JOIN sites s ON s.id=r.site_id
+                WHERE r.ts>=? AND r.is_bot=0 AND r.is_asset=0
+                  AND r.method IN ('GET', 'HEAD')
+                  AND r.status BETWEEN 200 AND 399
+                  AND r.country IS NOT NULL
+                  AND s.name NOT IN ({private_placeholders})
+                GROUP BY r.country ORDER BY requests DESC, r.country
+                """,
+                (cutoff, *LIVE_PRIVATE_SITES),
+            )
+        ]
+        radar_totals = dict(
+            conn.execute(
+                f"""
+                SELECT COUNT(*) requests, COUNT(DISTINCT r.ip_hash) visitors,
+                       COUNT(DISTINCT r.country) countries,
+                       COUNT(DISTINCT r.site_id) sites
+                FROM requests r JOIN sites s ON s.id=r.site_id
+                WHERE r.ts>=? AND r.is_bot=0 AND r.is_asset=0
+                  AND r.method IN ('GET', 'HEAD')
+                  AND r.status BETWEEN 200 AND 399
+                  AND s.name NOT IN ({private_placeholders})
+                """,
+                (cutoff, *LIVE_PRIVATE_SITES),
+            ).fetchone()
+        )
+    return jsonify({
+        "minutes": minutes,
+        "sites": rows,
+        "activity": activity,
+        "countries": country_rows,
+        "totals": radar_totals,
+        "generated_at": generated_at,
+        "privacy": {"excluded_activity_sites": list(LIVE_PRIVATE_SITES)},
+    })

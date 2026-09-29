@@ -22,6 +22,9 @@ log paths, retention, timezone, and log format all live in TOML configuration.
   crawler sightings, traffic records and spikes, visitor-day milestones, and
   explicitly reported RSS subscriber milestones. Gold chart markers connect
   each observation to the traffic around it.
+- A ten-second Live Radar with a rolling human activity stream, Automatic
+  Moment badges, relative timestamps, and a self-contained world pulse map.
+  Privacy-sensitive sites remain visible only as anonymous aggregate totals.
 - An RSS readership view that recognizes hosted and self-hosted feed clients,
   charts explicitly reported subscription totals, and keeps unreported readers
   visible without inventing subscriber counts from fetch frequency.
@@ -54,6 +57,10 @@ their fetcher without promising a count, so Webstats shows the reader and its
 feed requests but labels the subscriber total as unreported. A shared fetch is
 not treated as one person, and repeated fetches are never used as a proxy for
 subscriber growth.
+
+The Live Radar always excludes `ad-fontes.app` from individual activity and
+country results at the API layer. Its aggregate request, visitor, and bandwidth
+totals remain available without exposing paths, timestamps, or geography.
 
 ## Fresh installation in 14 steps
 
@@ -227,7 +234,7 @@ All routes require the admin session except `/api/health`:
 - `GET /api/events?from=&to=&site=&limit=`, `/ai-crawlers`
 - `GET /api/feed-readers`
 - `GET /api/almanac?year=&site=&bots=0&assets=0`
-- `GET /api/live?minutes=60`
+- `GET /api/live?minutes=60&limit=40`
 - `GET /api/health`
 
 Dates use `YYYY-MM-DD`. Visitor-day totals are sums of daily unique hashes. They

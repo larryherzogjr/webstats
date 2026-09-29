@@ -136,6 +136,33 @@ footer { color: #60748e; text-align: center; padding: 0 20px 40px; font-size: 11
 .milestone-list { list-style: none; padding: 0; margin: 18px 0 0; display: grid; gap: 8px; }
 .milestone-list li { display: flex; justify-content: space-between; gap: 12px; padding: 10px 0; border-top: 1px solid rgba(143, 162, 186, .12); font-size: 13px; }
 .milestone-list time { color: var(--muted); }
+.live-layout { display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(360px, .85fr); gap: 18px; align-items: start; }
+.live-layout .panel { margin: 0; }
+.world-radar { display: block; width: 100%; min-height: 280px; border: 1px solid rgba(143, 162, 186, .12); border-radius: 14px; background: radial-gradient(circle at 50% 48%, rgba(33, 91, 113, .25), rgba(8, 16, 29, .32) 58%); overflow: hidden; }
+.radar-grid path { fill: none; stroke: rgba(143, 162, 186, .08); stroke-width: 1; }
+.radar-land path { fill: #1a3041; stroke: #355267; stroke-width: 2; stroke-linejoin: round; }
+.radar-core { fill: var(--accent); filter: drop-shadow(0 0 5px rgba(110, 231, 199, .9)); }
+.radar-wave { fill: none; stroke: var(--accent); stroke-width: 2; transform-box: fill-box; transform-origin: center; animation: radar-wave 2.4s ease-out infinite; }
+@keyframes radar-wave { 0% { opacity: .9; transform: scale(.5); } 75%, 100% { opacity: 0; transform: scale(3.2); } }
+@media (prefers-reduced-motion: reduce) { .radar-wave { animation: none; opacity: .45; transform: scale(1.8); } }
+.country-chips { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 12px; min-height: 27px; }
+.country-chips span { padding: 6px 9px; border: 1px solid rgba(143, 162, 186, .14); border-radius: 999px; color: var(--muted); font-size: 11px; background: rgba(8, 16, 29, .3); }
+.country-chips strong { color: var(--text); margin-left: 3px; }
+.live-stream { max-height: 520px; overflow-y: auto; list-style: none; padding: 0; margin: 0; }
+.live-hit { display: grid; grid-template-columns: 10px minmax(0, 1fr) auto; gap: 10px; align-items: start; padding: 12px 4px; border-bottom: 1px solid rgba(143, 162, 186, .12); }
+.live-hit:last-child { border-bottom: 0; }
+.live-hit-dot { width: 7px; height: 7px; margin-top: 6px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 5px rgba(110, 231, 199, .08); }
+.live-hit-heading { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; min-width: 0; }
+.live-hit-heading a { color: var(--text); font-size: 13px; font-weight: 700; text-decoration: none; overflow-wrap: anywhere; }
+.live-hit-heading a:hover { color: var(--accent); }
+.live-hit p { margin: 4px 0 0; color: var(--muted); font-size: 11px; overflow-wrap: anywhere; }
+.live-hit time { color: var(--muted); font-size: 10px; white-space: nowrap; }
+.moment-chip { display: inline-flex; padding: 3px 6px; border-radius: 999px; font-size: 9px; font-weight: 800; letter-spacing: .04em; text-transform: uppercase; }
+.moment-chip.page { color: #d9ccff; background: rgba(167, 139, 250, .13); border: 1px solid rgba(167, 139, 250, .28); }
+.moment-chip.referrer { color: #aff6e3; background: rgba(110, 231, 199, .1); border: 1px solid rgba(110, 231, 199, .25); }
+.moment-chip.record, .moment-chip.milestone { color: #ffe5a3; background: rgba(245, 198, 107, .1); border: 1px solid rgba(245, 198, 107, .28); }
+.moment-chip.spike { color: #ffc2ca; background: rgba(255, 122, 138, .1); border: 1px solid rgba(255, 122, 138, .28); }
+.live-stream-panel .methodology-note { margin-bottom: 0; text-align: left; font-size: 10px; }
 
 .login-page { display: grid; place-items: center; padding: 24px; }
 .login-card { width: min(420px, 100%); padding: 38px; background: rgba(16, 26, 42, .96); border: 1px solid var(--border); border-radius: 22px; box-shadow: var(--shadow); }
@@ -158,6 +185,7 @@ footer { color: #60748e; text-align: center; padding: 0 20px 40px; font-size: 11
   .metric-grid, .detail-grid { grid-template-columns: 1fr 1fr; }
   .detail-grid > .panel { grid-column: 1 / -1; }
   .calendar-panel .panel-heading { align-items: flex-start; flex-direction: column; }
+  .live-layout { grid-template-columns: 1fr; }
 }
 
 @media (max-width: 520px) {
