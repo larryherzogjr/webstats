@@ -344,6 +344,40 @@ def _refresh_events_for_day(conn: sqlite3.Connection, day: str) -> None:
         if _is_meaningful_page(row["path"]):
             _upsert_event(conn, row, "new_page")
 
+    resurfaced = conn.execute(
+        """
+        SELECT r.site_id, MIN(r.ts) occurred_at, r.day, r.path,
+               MAX(old.day) previous_seen
+        FROM requests r JOIN daily_page_status old
+          ON old.site_id=r.site_id AND old.path=r.path AND old.day<r.day
+         AND old.status BETWEEN 200 AND 399
+         AND old.human_nonasset_requests>0
+        WHERE r.day=? AND r.is_bot=0 AND r.is_asset=0
+          AND r.method IN ('GET', 'HEAD') AND r.status BETWEEN 200 AND 399
+        GROUP BY r.site_id, r.day, r.path
+        HAVING MAX(old.day) <= date(?, '-30 days')
+        """,
+        (day, day),
+    )
+    for row in resurfaced:
+        if not _is_meaningful_page(row["path"]):
+            continue
+        conn.execute(
+            """
+            INSERT INTO events(
+                site_id, kind, event_key, occurred_at, day, path, source
+            ) VALUES (?, 'content_resurfaced', ?, ?, ?, ?, ?)
+            ON CONFLICT(event_key) DO UPDATE SET
+                occurred_at=excluded.occurred_at,
+                source=excluded.source
+            """,
+            (
+                row["site_id"],
+                f"content_resurfaced:{row['site_id']}:{row['path']}:{row['day']}",
+                row["occurred_at"], row["day"], row["path"], row["previous_seen"],
+            ),
+        )
+
 
 def _is_meaningful_page(path: str) -> bool:
     lowered = path.lower()

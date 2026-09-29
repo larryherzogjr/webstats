@@ -568,6 +568,11 @@ def _briefing_narrative(
                 f"{discoveries['referrers']} new referrer{'s' if discoveries['referrers'] != 1 else ''}"
             )
         lines.append("Webstats discovered " + " and ".join(parts) + ".")
+    if discoveries["resurfaced"]:
+        lines.append(
+            f"{discoveries['resurfaced']} older page"
+            f"{'s' if discoveries['resurfaced'] != 1 else ''} resurfaced after a quiet spell."
+        )
     if ai["requests"]:
         lines.append(
             f"Recognized AI crawlers made {ai['requests']:,} page requests across "
@@ -815,6 +820,7 @@ def briefing():
     discoveries = {
         "pages": event_counts["new_page"],
         "referrers": event_counts["new_referrer"],
+        "resurfaced": event_counts["content_resurfaced"],
     }
     geography = {
         "countries": len(countries),
@@ -853,6 +859,197 @@ def briefing():
             summary, page_changes, discoveries, ai, geography, feeds
         ),
         "scope": {"site": site["name"] if site else None},
+    })
+
+
+def _pulse_classification(
+    row: sqlite3.Row, recent_start: date, today: date
+) -> tuple[str, str, Optional[int]]:
+    recent = row["recent_requests"]
+    weekly_baseline = row["baseline_requests"] / 4
+    first_seen = date.fromisoformat(row["first_seen"])
+    previous_seen = (
+        date.fromisoformat(row["previous_seen"]) if row["previous_seen"] else None
+    )
+    quiet_days = None
+    if previous_seen and row["first_recent"]:
+        quiet_days = (
+            date.fromisoformat(row["first_recent"]) - previous_seen
+        ).days
+    if recent and first_seen >= recent_start:
+        return "debut", "New content receiving its first human visits.", None
+    if recent and quiet_days is not None and quiet_days >= 30:
+        return (
+            "resurfaced",
+            f"Returned after {quiet_days} quiet days.",
+            quiet_days,
+        )
+    if recent >= 3 and recent >= max(weekly_baseline * 2, weekly_baseline + 2):
+        return "rising", "Traffic is at least twice its recent weekly baseline.", None
+    lifetime_span = (today - first_seen).days
+    if recent and lifetime_span >= 28 and row["active_days"] >= 8:
+        return "evergreen", "Still attracting visits across a long active history.", None
+    if weekly_baseline >= 3 and recent <= weekly_baseline * 0.5:
+        return "cooling", "Traffic fell to half or less of its recent baseline.", None
+    if not recent and row["lifetime_requests"] >= 3 and row["last_seen"] < recent_start.isoformat():
+        return "dormant", "Previously active, with no visits in the last seven days.", None
+    return "steady", "Traffic is close to its recent pattern.", None
+
+
+@api_bp.get("/pulse")
+@login_required
+def content_pulse():
+    config = current_app.config["WEBSTATS_CONFIG"]
+    today = datetime.now(ZoneInfo(config.server.timezone)).date()
+    recent_start = today - timedelta(days=6)
+    baseline_start = recent_start - timedelta(days=28)
+    baseline_end = recent_start - timedelta(days=1)
+    limit = _int_arg("limit", 100, 1, 500)
+
+    with _conn() as conn:
+        site = _requested_site(conn)
+        site_clause = "AND p.site_id=?" if site else ""
+        parameters: tuple[Any, ...] = (
+            recent_start.isoformat(),
+            today.isoformat(),
+            baseline_start.isoformat(),
+            baseline_end.isoformat(),
+            recent_start.isoformat(),
+            recent_start.isoformat(),
+        )
+        if site:
+            parameters += (site["id"],)
+        stored = conn.execute(
+            f"""
+            SELECT s.name site, p.path,
+                   SUM(p.human_nonasset_requests) lifetime_requests,
+                   SUM(CASE WHEN p.day BETWEEN ? AND ?
+                       THEN p.human_nonasset_requests ELSE 0 END) recent_requests,
+                   SUM(CASE WHEN p.day BETWEEN ? AND ?
+                       THEN p.human_nonasset_requests ELSE 0 END) baseline_requests,
+                   MIN(p.day) first_seen, MAX(p.day) last_seen,
+                   MAX(CASE WHEN p.day<? THEN p.day END) previous_seen,
+                   MIN(CASE WHEN p.day>=? THEN p.day END) first_recent,
+                   COUNT(DISTINCT p.day) active_days
+            FROM daily_page_status p JOIN sites s ON s.id=p.site_id
+            WHERE p.status BETWEEN 200 AND 399
+              AND p.human_nonasset_requests>0 {site_clause}
+            GROUP BY p.site_id, p.path
+            """,
+            parameters,
+        ).fetchall()
+
+        recent_parameters: tuple[Any, ...] = (
+            recent_start.isoformat(), today.isoformat()
+        )
+        if site:
+            recent_parameters += (site["id"],)
+        referrer_site_clause = "AND r.site_id=?" if site else ""
+        referrers: dict[tuple[str, str], dict[str, Any]] = {}
+        for row in conn.execute(
+            f"""
+            SELECT s.name site, r.path, r.referrer_host,
+                   SUM(r.human_nonasset_requests) requests
+            FROM daily_page_referrer r JOIN sites s ON s.id=r.site_id
+            WHERE r.day BETWEEN ? AND ? AND r.human_nonasset_requests>0
+              {referrer_site_clause}
+            GROUP BY r.site_id, r.path, r.referrer_host
+            ORDER BY requests DESC, r.referrer_host
+            """,
+            recent_parameters,
+        ):
+            referrers.setdefault((row["site"], row["path"]), dict(row))
+
+        country_site_clause = "AND c.site_id=?" if site else ""
+        countries: dict[tuple[str, str], dict[str, Any]] = {}
+        for row in conn.execute(
+            f"""
+            SELECT s.name site, c.path, c.country,
+                   SUM(c.human_nonasset_requests) requests
+            FROM daily_page_country c JOIN sites s ON s.id=c.site_id
+            WHERE c.day BETWEEN ? AND ? AND c.human_nonasset_requests>0
+              {country_site_clause}
+            GROUP BY c.site_id, c.path, c.country
+            ORDER BY requests DESC, c.country
+            """,
+            recent_parameters,
+        ):
+            countries.setdefault((row["site"], row["path"]), dict(row))
+
+        families = tuple(AI_AGENTS)
+        placeholders = ",".join("?" for _ in families)
+        ai_site_clause = "AND a.site_id=?" if site else ""
+        ai_parameters: tuple[Any, ...] = (
+            recent_start.isoformat(), today.isoformat(), *families
+        )
+        if site:
+            ai_parameters += (site["id"],)
+        ai_requests = {
+            (row["site"], row["path"]): row["requests"]
+            for row in conn.execute(
+                f"""
+                SELECT s.name site, a.path,
+                       SUM(a.requests-a.asset_requests) requests
+                FROM daily_page_agent a JOIN sites s ON s.id=a.site_id
+                WHERE a.day BETWEEN ? AND ? AND a.is_bot=1
+                  AND a.ua_family IN ({placeholders}) {ai_site_clause}
+                GROUP BY a.site_id, a.path
+                HAVING SUM(a.requests-a.asset_requests)>0
+                """,
+                ai_parameters,
+            )
+        }
+
+    pages = []
+    counts: dict[str, int] = defaultdict(int)
+    priority = {
+        "resurfaced": 0, "rising": 1, "debut": 2, "evergreen": 3,
+        "cooling": 4, "dormant": 5, "steady": 6,
+    }
+    for row in stored:
+        category, explanation, quiet_days = _pulse_classification(
+            row, recent_start, today
+        )
+        counts[category] += 1
+        baseline_weekly = round(row["baseline_requests"] / 4, 1)
+        change = round(row["recent_requests"] - baseline_weekly, 1)
+        referrer = referrers.get((row["site"], row["path"]))
+        country = countries.get((row["site"], row["path"]))
+        pages.append({
+            "site": row["site"],
+            "path": row["path"],
+            "category": category,
+            "explanation": explanation,
+            "recent_requests": row["recent_requests"],
+            "weekly_baseline": baseline_weekly,
+            "change": change,
+            "first_seen": row["first_seen"],
+            "last_seen": row["last_seen"],
+            "active_days": row["active_days"],
+            "lifetime_requests": row["lifetime_requests"],
+            "quiet_days": quiet_days,
+            "top_referrer": referrer["referrer_host"] if referrer else None,
+            "top_country": country["country"] if country else None,
+            "ai_requests": ai_requests.get((row["site"], row["path"]), 0),
+        })
+    pages.sort(key=lambda row: (
+        priority[row["category"]], -abs(row["change"]),
+        -row["recent_requests"], row["site"], row["path"],
+    ))
+    signals = [row for row in pages if row["category"] != "steady"]
+    return jsonify({
+        "scope": {"site": site["name"] if site else None},
+        "window": {
+            "from": recent_start.isoformat(),
+            "to": today.isoformat(),
+            "baseline_from": baseline_start.isoformat(),
+            "baseline_to": baseline_end.isoformat(),
+        },
+        "counts": {name: counts.get(name, 0) for name in priority},
+        "signals": signals[:limit],
+        "steady": [row for row in pages if row["category"] == "steady"][:10],
+        "total_pages": len(pages),
+        "limited": len(signals) > limit,
     })
 
 
@@ -1511,7 +1708,7 @@ def live():
             SELECT e.site_id, e.occurred_at, e.path, e.kind
             FROM events e JOIN sites s ON s.id=e.site_id
             WHERE e.occurred_at>=? AND e.path IS NOT NULL
-              AND e.kind IN ('new_page', 'new_referrer')
+              AND e.kind IN ('new_page', 'new_referrer', 'content_resurfaced')
               AND s.name NOT IN ({private_placeholders})
               {event_site_clause}
             ORDER BY e.occurred_at

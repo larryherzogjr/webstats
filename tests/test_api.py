@@ -87,6 +87,7 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(self.client.get("/site/example.com/page").status_code, 400)
         self.assertEqual(self.client.get("/almanac").status_code, 200)
         self.assertEqual(self.client.get("/briefings").status_code, 200)
+        self.assertEqual(self.client.get("/pulse").status_code, 200)
         self.assertEqual(self.client.get("/feed-readers").status_code, 200)
         self.assertEqual(self.client.get("/ai-crawlers").status_code, 200)
         self.assertEqual(self.client.get("/live").status_code, 200)
@@ -716,6 +717,83 @@ class ApiTests(unittest.TestCase):
         self.assertTrue(archived.get_json()["week"]["complete"])
         self.assertEqual(invalid.status_code, 400)
         self.assertEqual(future.status_code, 400)
+
+    def test_content_pulse_classifies_page_momentum_and_context(self):
+        with connect(self.config.storage.db_path) as conn:
+            site_id = site_id_map(conn)["example.com"]
+            status_rows = []
+            for day, path, requests in (
+                ("2026-08-01", "/revived", 2),
+                ("2026-09-28", "/revived", 1),
+                ("2026-09-20", "/rising", 1),
+                ("2026-09-28", "/rising", 5),
+                ("2026-09-01", "/cooling", 16),
+                ("2026-09-28", "/cooling", 1),
+                ("2026-07-01", "/dormant", 3),
+            ):
+                status_rows.append(
+                    (site_id, day, path, 200, requests, requests, requests, requests)
+                )
+            conn.executemany(
+                """
+                INSERT INTO daily_page_status(
+                    site_id, day, path, status, requests, human_requests,
+                    nonasset_requests, human_nonasset_requests
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                status_rows,
+            )
+            conn.execute(
+                """
+                INSERT INTO daily_page_referrer(
+                    site_id, day, path, referrer_host, requests,
+                    human_requests, nonasset_requests, human_nonasset_requests
+                ) VALUES (?, '2026-09-28', '/revived', 'example.org', 1, 1, 1, 1)
+                """,
+                (site_id,),
+            )
+            conn.execute(
+                """
+                INSERT INTO daily_page_country(
+                    site_id, day, path, country, requests,
+                    human_requests, nonasset_requests, human_nonasset_requests
+                ) VALUES (?, '2026-09-28', '/revived', 'CA', 1, 1, 1, 1)
+                """,
+                (site_id,),
+            )
+            conn.execute(
+                """
+                INSERT INTO daily_page_agent(
+                    site_id, day, path, ua_family, is_bot, requests, asset_requests
+                ) VALUES (?, '2026-09-28', '/revived', 'GPTBot', 1, 2, 0)
+                """,
+                (site_id,),
+            )
+            conn.commit()
+        self.authenticate()
+
+        with patch("webstats.api.datetime", wraps=datetime) as clock:
+            clock.now.return_value = datetime(
+                2026, 9, 29, 12, tzinfo=ZoneInfo("America/Chicago")
+            )
+            response = self.client.get("/api/pulse")
+            scoped = self.client.get("/api/pulse?site=example.com")
+            unknown = self.client.get("/api/pulse?site=unknown.example")
+
+        self.assertEqual(response.status_code, 200)
+        body = response.get_json()
+        pages = {row["path"]: row for row in body["signals"]}
+        self.assertEqual(pages["/revived"]["category"], "resurfaced")
+        self.assertEqual(pages["/revived"]["quiet_days"], 58)
+        self.assertEqual(pages["/revived"]["top_referrer"], "example.org")
+        self.assertEqual(pages["/revived"]["top_country"], "CA")
+        self.assertEqual(pages["/revived"]["ai_requests"], 2)
+        self.assertEqual(pages["/rising"]["category"], "rising")
+        self.assertEqual(pages["/cooling"]["category"], "cooling")
+        self.assertEqual(pages["/dormant"]["category"], "dormant")
+        self.assertEqual(body["counts"]["debut"], 1)
+        self.assertEqual(scoped.get_json()["scope"], {"site": "example.com"})
+        self.assertEqual(unknown.status_code, 404)
 
     def test_invalid_range_is_rejected(self):
         self.authenticate()

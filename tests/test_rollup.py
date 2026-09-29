@@ -183,6 +183,36 @@ class RollupTests(unittest.TestCase):
         ]
         self.assertEqual(pages, [("2026-09-28", "/new-essay", "US")])
 
+    def test_resurfaced_content_moment_after_thirty_quiet_days(self):
+        site_id = site_id_map(self.conn)["example.com"]
+        old = (
+            "old-revival", "old-revival-fingerprint", site_id, 1785592800,
+            "2026-08-01", "old-reader", "GET", "/evergreen", None, 200,
+            10, None, None, "Mozilla/5.0", "Other browser", "Other",
+            0, 0, "US",
+        )
+        current = (
+            "new-revival", "new-revival-fingerprint", site_id, 1790600000,
+            "2026-09-28", "new-reader", "GET", "/evergreen", None, 200,
+            10, None, None, "Mozilla/5.0", "Other browser", "Other",
+            0, 0, "CA",
+        )
+        insert_requests(self.conn, [old])
+        recompute_day(self.conn, "2026-08-01")
+        insert_requests(self.conn, [current])
+        recompute_day(self.conn, "2026-09-28")
+        recompute_day(self.conn, "2026-09-28")
+
+        rows = [
+            tuple(row) for row in self.conn.execute(
+                """
+                SELECT day, path, source FROM events
+                WHERE kind='content_resurfaced'
+                """
+            )
+        ]
+        self.assertEqual(rows, [("2026-09-28", "/evergreen", "2026-08-01")])
+
     def test_summary_moments_are_meaningful_and_idempotent(self):
         site_id = site_id_map(self.conn)["example.com"]
         start = date(2026, 9, 1)

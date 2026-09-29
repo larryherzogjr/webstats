@@ -266,6 +266,7 @@
       traffic_spike: ["Unusual attention", `${event.site} received ${value} requests—well above its recent baseline`, "spike"],
       visitor_milestone: ["Visitor-day milestone", `${event.site} passed ${value} visitor-days`, "milestone"],
       feed_subscriber_milestone: ["RSS readership milestone", `${event.source} reported ${value} subscribers to ${event.path}`, "feed"],
+      content_resurfaced: ["Content resurfaced", `${event.path} returned after a long quiet spell`, "resurfaced"],
     };
     return presentations[event.kind] || ["Automatic moment", event.path || event.site, "other"];
   }
@@ -298,10 +299,11 @@
   async function loadOverview() {
     clearError();
     try {
-      const [data, journal, briefing] = await Promise.all([
+      const [data, journal, briefing, pulse] = await Promise.all([
         api(`/api/overview?${query()}`),
         api(`/api/events?${query({ limit: 100 })}`),
         api("/api/briefing"),
+        api("/api/pulse?limit=3"),
       ]);
       document.querySelector("#range-label").textContent = dateLabel(data.from, data.to);
       document.querySelector("#site-cards").innerHTML = data.sites.map(site => {
@@ -335,7 +337,70 @@
       document.querySelector("#briefing-preview").innerHTML = briefing.narrative.slice(0, 3)
         .map((line, index) => `<p${index === 0 ? ' class="lead"' : ""}>${escapeHtml(line)}</p>`)
         .join("");
+      renderPulsePreview(pulse);
       renderEvents(journal.events);
+    } catch (error) { showError(error); }
+  }
+
+  function pulseBadge(category) {
+    return `<span class="pulse-badge ${escapeHtml(category)}">${escapeHtml(category)}</span>`;
+  }
+
+  function pageStoryHref(item, from, to) {
+    const params = new URLSearchParams({ from, to, bots: "0", assets: "0", path: item.path });
+    return `/site/${encodeURIComponent(item.site)}/page?${params}`;
+  }
+
+  function renderPulsePreview(data) {
+    const target = document.querySelector("#pulse-preview");
+    if (!target) return;
+    const signals = data.signals.slice(0, 3);
+    target.innerHTML = signals.length
+      ? signals.map(item => `<a class="pulse-preview-card" href="${escapeHtml(pageStoryHref(item, data.window.from, data.window.to))}">${pulseBadge(item.category)}<strong>${escapeHtml(item.path)}</strong><span>${escapeHtml(item.site)} · ${escapeHtml(item.explanation)}</span></a>`).join("")
+      : '<p class="empty">No unusual content movement in the last seven days.</p>';
+  }
+
+  async function loadPulse() {
+    clearError();
+    try {
+      const parameters = new URLSearchParams({ limit: "100" });
+      if (scopeSite) parameters.set("site", scopeSite);
+      const data = await api(`/api/pulse?${parameters}`);
+      document.querySelector("#pulse-range").textContent = dateLabel(data.window.from, data.window.to);
+      const notable = data.signals.length;
+      document.querySelector("#pulse-heading").textContent = notable
+        ? `${fmt.format(notable)} signal${notable === 1 ? "" : "s"} worth noticing`
+        : "Everything is moving normally";
+      const resurfaced = data.counts.resurfaced;
+      const rising = data.counts.rising;
+      const debut = data.counts.debut;
+      document.querySelector("#pulse-summary").textContent = notable
+        ? `${fmt.format(rising)} rising, ${fmt.format(resurfaced)} resurfaced, and ${fmt.format(debut)} newly discovered across ${fmt.format(data.total_pages)} known pages.`
+        : `No pages departed meaningfully from their recent pattern across ${fmt.format(data.total_pages)} known pages.`;
+      document.querySelector("#pulse-metrics").innerHTML = [
+        metric("Rising", fmt.format(data.counts.rising)),
+        metric("Resurfaced", fmt.format(data.counts.resurfaced)),
+        metric("Debuts", fmt.format(data.counts.debut)),
+        metric("Evergreen", fmt.format(data.counts.evergreen)),
+        metric("Cooling", fmt.format(data.counts.cooling)),
+        metric("Dormant", fmt.format(data.counts.dormant)),
+      ].join("");
+      const signals = document.querySelector("#pulse-signals");
+      signals.innerHTML = data.signals.length ? data.signals.map(item => {
+        const context = [
+          item.top_referrer ? `via ${item.top_referrer}` : null,
+          item.top_country ? countryFlag(item.top_country) + " " + item.top_country : null,
+          item.ai_requests ? `${item.ai_requests} AI request${item.ai_requests === 1 ? "" : "s"}` : null,
+        ].filter(Boolean);
+        const href = pageStoryHref(item, data.window.from, data.window.to);
+        return `<article class="pulse-card"><div class="pulse-card-top">${pulseBadge(item.category)}<span class="pulse-change ${item.change > 0 ? "change-up" : item.change < 0 ? "change-down" : ""}">${escapeHtml(signed(item.change))}</span></div><a href="${escapeHtml(href)}">${escapeHtml(item.path)}</a><small>${escapeHtml(item.site)}</small><p>${escapeHtml(item.explanation)}</p><div class="pulse-numbers"><strong>${fmt.format(item.recent_requests)}</strong><span>visits · baseline ${fmt.format(item.weekly_baseline)}</span></div>${context.length ? `<div class="pulse-context">${context.map(value => `<span>${escapeHtml(value)}</span>`).join("")}</div>` : ""}</article>`;
+      }).join("") : '<p class="empty">No unusual content movement in this window.</p>';
+      fillTable("#pulse-steady", data.steady, [
+        { key: "path", format: (value, item) => `<a class="table-link" href="${escapeHtml(pageStoryHref(item, data.window.from, data.window.to))}">${escapeHtml(value)}</a>` },
+        { key: "site" },
+        { key: "recent_requests", format: fmt.format },
+        { key: "weekly_baseline", format: fmt.format },
+      ], "No steady pages yet.");
     } catch (error) { showError(error); }
   }
 
@@ -398,9 +463,11 @@
         : '<tr><td class="empty" colspan="3">No page movement to report.</td></tr>';
       const newPages = data.moments.filter(item => item.kind === "new_page");
       const newReferrers = data.moments.filter(item => item.kind === "new_referrer");
+      const resurfaced = data.moments.filter(item => item.kind === "content_resurfaced");
       renderBriefingFacts("#briefing-discoveries", [
         { value: data.discoveries.pages, label: "new pages discovered", detail: newPages[0] ? `${newPages[0].site}${newPages[0].path}` : "No new content this week" },
         { value: data.discoveries.referrers, label: "new referring domains", detail: newReferrers[0] ? `${newReferrers[0].source} → ${newReferrers[0].path}` : "No new referrers this week" },
+        { value: data.discoveries.resurfaced, label: "pages resurfaced", detail: resurfaced[0] ? `${resurfaced[0].site}${resurfaced[0].path}` : "No revivals this week" },
         { value: data.moment_counts.traffic_record || 0, label: "traffic records", detail: `${data.moment_counts.traffic_spike || 0} unusual spikes` },
       ]);
       renderBriefingFacts("#briefing-signals", [
@@ -621,6 +688,7 @@
       traffic_record: ["record", "Record"],
       traffic_spike: ["spike", "Spike"],
       visitor_milestone: ["milestone", "Milestone"],
+      content_resurfaced: ["resurfaced", "Resurfaced"],
     };
     stream.innerHTML = activity.map(hit => {
       const detail = [hit.country ? `${countryFlag(hit.country)} ${hit.country}` : null, hit.browser, hit.referrer_host ? `via ${hit.referrer_host}` : null].filter(Boolean).join(" · ");
@@ -899,6 +967,21 @@
     setupBriefings();
     setupSiteFilter(() => loadBriefing(true));
     loadBriefing();
+  }
+  if (page === "pulse") {
+    setupSiteFilter(() => {
+      const parameters = new URLSearchParams();
+      if (scopeSite) parameters.set("site", scopeSite);
+      window.history.pushState({}, "", `${window.location.pathname}${parameters.size ? `?${parameters}` : ""}`);
+      loadPulse();
+    });
+    window.addEventListener("popstate", () => {
+      scopeSite = new URLSearchParams(window.location.search).get("site") || "";
+      const select = document.querySelector("#site-filter");
+      if (select) select.value = scopeSite;
+      loadPulse();
+    });
+    loadPulse();
   }
   if (page === "health") loadHealth();
 })();

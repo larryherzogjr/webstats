@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+{% block title %}Content Pulse | Webstats{% endblock %}
+{% block page_id %}pulse{% endblock %}
+{% block content %}
+<div class="page-heading">
+  <div><p class="eyebrow">Automatic content intelligence</p><h1>Content Pulse</h1></div>
+  <p id="pulse-range" class="range-label"></p>
+</div>
+<section class="filters compact scope-controls" aria-label="Content Pulse site filter">
+  <div class="custom-dates"><label>Site <select id="site-filter"><option value="">All sites</option></select></label></div>
+</section>
+<div id="page-error" class="alert hidden" role="alert"></div>
+<section class="panel pulse-hero">
+  <div class="panel-heading">
+    <div><p class="eyebrow">Right now</p><h2 id="pulse-heading">Reading the signals</h2></div>
+    <span class="legend-note">Last 7 days vs normalized prior 28 days</span>
+  </div>
+  <p id="pulse-summary" class="pulse-summary"></p>
+</section>
+<section id="pulse-metrics" class="metric-grid" aria-label="Content states"></section>
+<section class="panel">
+  <div class="panel-heading">
+    <div><p class="eyebrow">Worth noticing</p><h2>Content signals</h2></div>
+    <span class="legend-note">Automatic, explainable classifications</span>
+  </div>
+  <div id="pulse-signals" class="pulse-card-grid" aria-live="polite"></div>
+</section>
+<section class="panel">
+  <div class="panel-heading">
+    <div><p class="eyebrow">Quietly consistent</p><h2>Steady pages</h2></div>
+  </div>
+  <div class="table-wrap"><table><thead><tr><th>Page</th><th>Site</th><th>7 days</th><th>Weekly baseline</th></tr></thead><tbody id="pulse-steady"></tbody></table></div>
+</section>
+<p class="muted methodology-note">Debuts are first seen this week. Resurfaced pages return after at least 30 quiet days. Rising and cooling pages compare seven-day traffic with a weekly average from the prior 28 days. Evergreen requires a longer, consistently active history.</p>
+{% endblock %}

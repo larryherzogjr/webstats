@@ -95,6 +95,12 @@ def briefings():
     return render_template("briefings.html", server_today=_server_today())
 
 
+@views_bp.get("/pulse")
+@login_required
+def pulse():
+    return render_template("pulse.html", server_today=_server_today())
+
+
 @views_bp.get("/health")
 @login_required
 def health():
