@@ -18,8 +18,8 @@ PASSWORD_LINE = re.compile(r'^(\s*admin_password_hash\s*=\s*)"[^"]*"(\s*(?:#.*)?
 
 
 def set_password(config_path: Path, password: str) -> None:
-    if len(password) < 12:
-        raise ValueError("Password must contain at least 12 characters")
+    if not password:
+        raise ValueError("Password cannot be empty")
     source = config_path.read_text(encoding="utf-8")
     password_hash = bcrypt.hashpw(password.encode(), bcrypt.gensalt(rounds=12)).decode()
     replacement = lambda match: f'{match.group(1)}"{password_hash}"{match.group(2)}'

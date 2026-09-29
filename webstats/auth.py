@@ -4,11 +4,15 @@ from __future__ import annotations
 
 from collections import defaultdict, deque
 from functools import wraps
+import hashlib
+import hmac
 import time
 from typing import Callable, Deque, TypeVar
 
 import bcrypt
 from flask import Blueprint, current_app, jsonify, redirect, render_template, request, session, url_for
+
+from .config import Config
 
 
 auth_bp = Blueprint("auth", __name__)
@@ -18,10 +22,21 @@ _MAX_ATTEMPTS = 8
 F = TypeVar("F", bound=Callable)
 
 
+def _credential_token(config: Config) -> str:
+    value = f"{config.server.admin_user}\0{config.server.admin_password_hash}"
+    return hashlib.sha256(value.encode()).hexdigest()
+
+
 def login_required(view: F) -> F:
     @wraps(view)
     def wrapped(*args, **kwargs):
-        if not session.get("authenticated"):
+        config = current_app.config["WEBSTATS_CONFIG"]
+        token = session.get("credential_token", "")
+        authenticated = session.get("authenticated") and hmac.compare_digest(
+            token, _credential_token(config)
+        )
+        if not authenticated:
+            session.clear()
             if request.path.startswith("/api/"):
                 return jsonify({"error": "authentication required"}), 401
             return redirect(url_for("auth.login", next=request.full_path))
@@ -61,6 +76,7 @@ def login():
         if valid:
             session.clear()
             session["authenticated"] = True
+            session["credential_token"] = _credential_token(config)
             _attempts.pop(key, None)
             target = request.args.get("next", "")
             if not target.startswith("/") or target.startswith("//"):
@@ -75,4 +91,3 @@ def login():
 def logout():
     session.clear()
     return redirect(url_for("auth.login"))
-

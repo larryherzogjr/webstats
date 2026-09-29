@@ -6,6 +6,7 @@ import unittest
 import bcrypt
 
 from webstats.app import create_app
+from webstats.auth import _credential_token
 from webstats.config import Config, GeoIPConfig, ServerConfig, SiteConfig, StorageConfig
 from webstats.ingest import ingest_once
 
@@ -49,6 +50,7 @@ class ApiTests(unittest.TestCase):
     def authenticate(self):
         with self.client.session_transaction() as session:
             session["authenticated"] = True
+            session["credential_token"] = _credential_token(self.config)
 
     def test_api_requires_authentication(self):
         response = self.client.get("/api/sites")
@@ -77,10 +79,21 @@ class ApiTests(unittest.TestCase):
         client = app.test_client()
         with client.session_transaction() as session:
             session["authenticated"] = True
+            session["credential_token"] = _credential_token(config)
         response = client.get("/site/example.com")
         self.assertIn(
             '<a href="https://db-ip.com"', response.get_data(as_text=True)
         )
+
+    def test_credential_change_invalidates_existing_session(self):
+        self.authenticate()
+        self.assertEqual(self.client.get("/").status_code, 200)
+        changed = replace(
+            self.config,
+            server=replace(self.config.server, admin_user="new-admin"),
+        )
+        self.app.config["WEBSTATS_CONFIG"] = changed
+        self.assertEqual(self.client.get("/").status_code, 302)
 
     def test_health_is_public_and_safe(self):
         response = self.client.get("/api/health")

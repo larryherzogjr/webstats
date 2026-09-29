@@ -29,12 +29,22 @@ class PasswordToolTests(unittest.TestCase):
             chown.assert_called_once()
             self.assertEqual(chown.call_args.args[1:], (original.st_uid, original.st_gid))
 
-    def test_rejects_short_password(self):
+    def test_accepts_short_password_without_complexity_rules(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "config.toml"
+            path.write_text('[server]\nadmin_password_hash = "old"\n')
+            set_password(path, "x")
+            encoded = (
+                path.read_text().split('admin_password_hash = "', 1)[1].split('"', 1)[0]
+            )
+            self.assertTrue(bcrypt.checkpw(b"x", encoded.encode()))
+
+    def test_rejects_empty_password(self):
         with tempfile.TemporaryDirectory() as temp:
             path = Path(temp) / "config.toml"
             path.write_text('[server]\nadmin_password_hash = "old"\n')
             with self.assertRaises(ValueError):
-                set_password(path, "too-short")
+                set_password(path, "")
 
 
 if __name__ == "__main__":
