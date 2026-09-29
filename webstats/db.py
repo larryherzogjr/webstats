@@ -9,7 +9,7 @@ from typing import Iterable
 from .config import Config
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -22,6 +22,7 @@ CREATE TABLE IF NOT EXISTS sites (
 CREATE TABLE IF NOT EXISTS requests (
     id INTEGER PRIMARY KEY,
     source_key TEXT NOT NULL UNIQUE,
+    source_fingerprint TEXT NOT NULL,
     site_id INTEGER NOT NULL REFERENCES sites(id),
     ts INTEGER NOT NULL,
     day TEXT NOT NULL,
@@ -44,6 +45,8 @@ CREATE INDEX IF NOT EXISTS requests_site_ts ON requests(site_id, ts);
 CREATE INDEX IF NOT EXISTS requests_site_path ON requests(site_id, path);
 CREATE INDEX IF NOT EXISTS requests_site_bot_ts ON requests(site_id, is_bot, ts);
 CREATE INDEX IF NOT EXISTS requests_day ON requests(day);
+CREATE INDEX IF NOT EXISTS requests_site_fingerprint
+    ON requests(site_id, source_fingerprint);
 CREATE TABLE IF NOT EXISTS ingest_runs (
     id INTEGER PRIMARY KEY,
     started_at INTEGER NOT NULL,
@@ -142,20 +145,68 @@ def connect(path: str | Path, readonly: bool = False) -> sqlite3.Connection:
     return conn
 
 
-def initialize(conn: sqlite3.Connection, config: Config) -> None:
-    conn.executescript(SCHEMA)
-    row = conn.execute("SELECT version FROM schema_version LIMIT 1").fetchone()
-    if row is None:
-        conn.execute("INSERT INTO schema_version(version) VALUES (?)", (SCHEMA_VERSION,))
-    elif row["version"] != SCHEMA_VERSION:
-        raise RuntimeError(
-            f"Database schema {row['version']} is not supported by app schema {SCHEMA_VERSION}"
+def _migrate_1_to_2(conn: sqlite3.Connection) -> None:
+    columns = {row["name"] for row in conn.execute("PRAGMA table_info(requests)")}
+    if "source_fingerprint" not in columns:
+        conn.execute(
+            "ALTER TABLE requests ADD COLUMN source_fingerprint TEXT NOT NULL DEFAULT ''"
         )
-    conn.executemany(
-        "INSERT INTO sites(name) VALUES (?) ON CONFLICT(name) DO NOTHING",
-        ((site.name,) for site in config.sites),
+    conn.execute(
+        """
+        UPDATE requests SET source_fingerprint=substr(source_key, -16)
+        WHERE source_fingerprint=''
+        """
     )
-    conn.commit()
+
+
+MIGRATIONS = {1: _migrate_1_to_2}
+
+
+def _execute_schema(conn: sqlite3.Connection) -> None:
+    for statement in SCHEMA.split(";"):
+        if statement.strip():
+            conn.execute(statement)
+
+
+def initialize(conn: sqlite3.Connection, config: Config) -> None:
+    try:
+        # Gunicorn workers can initialize concurrently. An immediate transaction
+        # serializes version checks and migrations before either worker proceeds.
+        conn.execute("BEGIN IMMEDIATE")
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL)"
+        )
+        row = conn.execute("SELECT version FROM schema_version LIMIT 1").fetchone()
+        if row is None:
+            _execute_schema(conn)
+            conn.execute(
+                "INSERT INTO schema_version(version) VALUES (?)", (SCHEMA_VERSION,)
+            )
+        else:
+            version = row["version"]
+            if version > SCHEMA_VERSION:
+                raise RuntimeError(
+                    f"Database schema {version} is newer than app schema {SCHEMA_VERSION}"
+                )
+            while version < SCHEMA_VERSION:
+                migration = MIGRATIONS.get(version)
+                if migration is None:
+                    raise RuntimeError(
+                        f"No migration from database schema {version} to "
+                        f"app schema {SCHEMA_VERSION}"
+                    )
+                migration(conn)
+                version += 1
+                conn.execute("UPDATE schema_version SET version=?", (version,))
+            _execute_schema(conn)
+        conn.executemany(
+            "INSERT INTO sites(name) VALUES (?) ON CONFLICT(name) DO NOTHING",
+            ((site.name,) for site in config.sites),
+        )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
 
 
 def site_id_map(conn: sqlite3.Connection) -> dict[str, int]:
@@ -167,10 +218,10 @@ def insert_requests(conn: sqlite3.Connection, rows: Iterable[tuple]) -> int:
     conn.executemany(
         """
         INSERT OR IGNORE INTO requests(
-            source_key, site_id, ts, day, ip_hash, method, path, query, status,
-            bytes, referrer_host, referrer, user_agent, ua_family, os_family,
-            is_bot, is_asset, country
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            source_key, source_fingerprint, site_id, ts, day, ip_hash, method,
+            path, query, status, bytes, referrer_host, referrer, user_agent,
+            ua_family, os_family, is_bot, is_asset, country
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         rows,
     )

@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Optional
 
 from flask import Flask
+from werkzeug.middleware.proxy_fix import ProxyFix
 
 from .api import api_bp
 from .auth import auth_bp
@@ -21,6 +22,9 @@ def create_app(config: Config | None = None, config_path: str | Path | None = No
         path = config_path or os.environ.get("WEBSTATS_CONFIG", "/etc/webstats/config.toml")
         config = load_config(path)
     app = Flask(__name__)
+    # The production service listens only on loopback behind the bundled nginx
+    # configuration, so exactly one forwarded hop is trusted.
+    app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1)
     app.config.update(
         SECRET_KEY=config.server.secret_key,
         SESSION_COOKIE_SECURE=os.environ.get("WEBSTATS_INSECURE_COOKIE") != "1",

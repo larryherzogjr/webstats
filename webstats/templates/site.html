@@ -5,18 +5,18 @@
 {% block content %}
 <div class="page-heading">
   <div><p class="eyebrow">Site detail</p><h1>{{ site_name }}</h1></div>
-  <a class="text-link" href="{{ url_for('views.overview') }}">Back to overview</a>
+  <a id="overview-link" class="text-link" href="{{ url_for('views.overview') }}">Back to overview</a>
 </div>
 {% include "_filters.html" %}
 <div id="page-error" class="alert hidden" role="alert"></div>
 <section class="panel chart-panel">
-  <div class="panel-heading"><div><p class="eyebrow">Trend</p><h2>Requests and daily visitors</h2></div></div>
+  <div class="panel-heading"><div><p class="eyebrow">Trend</p><h2 id="traffic-heading">Requests and daily visitors</h2></div></div>
   <div class="chart-wrap"><canvas id="site-chart"></canvas></div>
 </section>
 <div class="detail-grid">
   <section class="panel span-two">
     <div class="panel-heading"><div><p class="eyebrow">Content</p><h2>Top pages</h2></div><div class="pager"><button id="pages-prev">Previous</button><button id="pages-next">Next</button></div></div>
-    <div class="table-wrap"><table><thead><tr><th>Path</th><th>Requests</th><th>Daily visitors</th></tr></thead><tbody id="pages-table"></tbody></table></div>
+    <div class="table-wrap"><table><thead><tr><th>Path</th><th>Requests</th><th>Visitor-days</th></tr></thead><tbody id="pages-table"></tbody></table></div>
   </section>
   <section class="panel">
     <div class="panel-heading"><div><p class="eyebrow">Discovery</p><h2>Referrers</h2></div></div>

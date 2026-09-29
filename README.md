@@ -20,10 +20,13 @@ log paths, retention, timezone, and log format all live in TOML configuration.
   country classification.
 - Idempotent daily rollups retained after raw request pruning.
 - Authenticated JSON APIs and responsive server-rendered pages.
+- Zero-filled daily charts, automatic hourly charts for one-day site views, and
+  bookmarkable date and traffic filters.
 - Local Chart.js 4.4.7 bundle with no CDN or front-end build step.
 - Bcrypt login, secure session cookies, login throttling, and public safe health
   status.
 - systemd, nginx, health-check, password, and backfill assets.
+- Versioned SQLite migrations and GitHub Actions checks for Python 3.11 and 3.12.
 
 ## Fresh installation in 14 steps
 
@@ -177,6 +180,14 @@ logs produce warnings and do not stop other sites. Unparseable lines are counted
 sampled in the journal, and skipped. The health API reveals log identifiers and
 offsets but not filesystem paths.
 
+Backfill reconciles live, renamed, and gzip-compressed copies of the same log
+records. It will not replace a retained historical rollup with partial archive
+data after the corresponding raw rows have expired.
+
+Database schema upgrades run automatically inside a serialized SQLite
+transaction during application or ingestion startup. Back up the database before
+deploying a release that changes the schema.
+
 ## API
 
 All routes require the admin session except `/api/health`:
@@ -188,8 +199,9 @@ All routes require the admin session except `/api/health`:
 - `GET /api/live?minutes=60`
 - `GET /api/health`
 
-Dates use `YYYY-MM-DD`. Daily visitor totals are sums of daily unique hashes.
-They deliberately do not identify the same visitor across days.
+Dates use `YYYY-MM-DD`. Visitor-day totals are sums of daily unique hashes. They
+deliberately do not identify the same visitor across days. Site detail views use
+hourly buckets automatically when a single day is selected.
 
 ## Troubleshooting
 

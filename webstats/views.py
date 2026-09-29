@@ -1,5 +1,8 @@
 """HTML page routes."""
 
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
 from flask import Blueprint, abort, current_app, render_template
 
 from .auth import login_required
@@ -8,10 +11,15 @@ from .auth import login_required
 views_bp = Blueprint("views", __name__)
 
 
+def _server_today() -> str:
+    config = current_app.config["WEBSTATS_CONFIG"]
+    return datetime.now(ZoneInfo(config.server.timezone)).date().isoformat()
+
+
 @views_bp.get("/")
 @login_required
 def overview():
-    return render_template("overview.html")
+    return render_template("overview.html", server_today=_server_today())
 
 
 @views_bp.get("/site/<path:name>")
@@ -22,7 +30,10 @@ def site(name: str):
     if name not in configured:
         abort(404)
     return render_template(
-        "site.html", site_name=name, geoip_enabled=config.geoip.enabled
+        "site.html",
+        site_name=name,
+        geoip_enabled=config.geoip.enabled,
+        server_today=_server_today(),
     )
 
 

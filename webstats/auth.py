@@ -75,6 +75,7 @@ def login():
             valid = False
         if valid:
             session.clear()
+            session.permanent = True
             session["authenticated"] = True
             session["credential_token"] = _credential_token(config)
             _attempts.pop(key, None)

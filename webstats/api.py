@@ -53,6 +53,30 @@ def _date_range() -> tuple[str, str]:
     return start.isoformat(), end.isoformat()
 
 
+def _day_buckets(start: str, end: str) -> list[str]:
+    current = date.fromisoformat(start)
+    final = date.fromisoformat(end)
+    buckets = []
+    while current <= final:
+        buckets.append(current.isoformat())
+        current += timedelta(days=1)
+    return buckets
+
+
+def _hour_buckets(start: str, end: str, zone: ZoneInfo) -> list[str]:
+    first = datetime.combine(date.fromisoformat(start), datetime.min.time(), tzinfo=zone)
+    last = datetime.combine(
+        date.fromisoformat(end) + timedelta(days=1), datetime.min.time(), tzinfo=zone
+    )
+    current = first.astimezone(timezone.utc)
+    stop = last.astimezone(timezone.utc)
+    buckets = []
+    while current < stop:
+        buckets.append(current.astimezone(zone).strftime("%Y-%m-%dT%H:00:00%z"))
+        current += timedelta(hours=1)
+    return buckets
+
+
 class ApiError(Exception):
     def __init__(self, message: str, status: int = 400):
         self.message = message
@@ -181,7 +205,7 @@ def overview():
                 (prior_start.isoformat(), prior_end.isoformat(), bots, assets),
             )
         }
-        series = [
+        stored_series = [
             dict(row)
             for row in conn.execute(
                 """
@@ -201,6 +225,17 @@ def overview():
             """,
             (start, end),
         ).fetchone()
+    series_values = {
+        (row["day"], row["site"]): row for row in stored_series
+    }
+    series = [
+        series_values.get(
+            (day, name),
+            {"day": day, "site": name, "requests": 0, "unique_visitors": 0},
+        )
+        for day in _day_buckets(start, end)
+        for name in current
+    ]
     cards = []
     for name, row in current.items():
         previous = prior.get(name, 0)
@@ -232,7 +267,7 @@ def timeseries(name: str):
     with _conn() as conn:
         site = _site(conn, name)
         if interval == "day":
-            rows = [
+            stored = [
                 dict(row)
                 for row in conn.execute(
                     """
@@ -243,7 +278,22 @@ def timeseries(name: str):
                     (site["id"], start, end, bots, assets),
                 )
             ]
+            values = {row["bucket"]: row for row in stored}
+            rows = [
+                values.get(
+                    bucket,
+                    {
+                        "bucket": bucket,
+                        "requests": 0,
+                        "unique_visitors": 0,
+                        "bytes": 0,
+                    },
+                )
+                for bucket in _day_buckets(start, end)
+            ]
         elif interval == "hour":
+            if (date.fromisoformat(end) - date.fromisoformat(start)).days > 31:
+                raise ApiError("Hourly ranges cannot exceed 32 days")
             raw = conn.execute(
                 """
                 SELECT ts, ip_hash, bytes FROM requests
@@ -261,8 +311,13 @@ def timeseries(name: str):
                 item["bytes"] += row["bytes"]
                 item["visitors"].add(row["ip_hash"])
             rows = [
-                {"bucket": key, "requests": value["requests"], "bytes": value["bytes"], "unique_visitors": len(value["visitors"])}
-                for key, value in sorted(groups.items())
+                {
+                    "bucket": bucket,
+                    "requests": groups.get(bucket, {}).get("requests", 0),
+                    "bytes": groups.get(bucket, {}).get("bytes", 0),
+                    "unique_visitors": len(groups.get(bucket, {}).get("visitors", set())),
+                }
+                for bucket in _hour_buckets(start, end, zone)
             ]
         else:
             raise ApiError("interval must be day or hour")
@@ -321,31 +376,56 @@ def _ranked_endpoint(name: str, table: str, dimension: str, output: str):
 @api_bp.get("/site/<path:name>/referrers")
 @login_required
 def referrers(name: str):
-    response = _ranked_endpoint(name, "daily_referrer", "referrer_host", "referrers")
-    body = response.get_json()
+    start, end = _date_range()
+    bots, assets = _flags()
+    metric = _metric_column(bots, assets)
+    limit = _int_arg("limit", 25, 1, 100)
+    with _conn() as conn:
+        site = _site(conn, name)
+        rows = conn.execute(
+            f"""
+            SELECT referrer_host, SUM({metric}) requests FROM daily_referrer
+            WHERE site_id=? AND day BETWEEN ? AND ?
+            GROUP BY referrer_host HAVING SUM({metric})>0
+            """,
+            (site["id"], start, end),
+        )
+        body = {"site": name}
     grouped: dict[str, int] = defaultdict(int)
-    for row in body["referrers"]:
+    for row in rows:
         grouped[_referrer_group(row["referrer_host"])] += row["requests"]
     body["referrers"] = [
         {"group": group, "requests": count}
         for group, count in sorted(grouped.items(), key=lambda item: (-item[1], item[0]))
-    ]
+    ][:limit]
     return jsonify(body)
 
 
 def _referrer_group(host: str) -> str:
-    value = host.lower()
+    value = host.lower().rstrip(".")
     groups = (
-        (("google.",), "Google"),
+        (
+            (
+                "google.com",
+                "google.ca",
+                "google.co.uk",
+                "google.com.au",
+                "google.co.in",
+                "google.co.jp",
+                "google.de",
+                "google.fr",
+            ),
+            "Google",
+        ),
         (("bing.com",), "Bing"),
         (("duckduckgo.com", "duck.com"), "DuckDuckGo"),
-        (("search.yahoo.",), "Yahoo"),
+        (("search.yahoo.com", "search.yahoo.co.jp", "search.yahoo.co.uk"), "Yahoo"),
         (("facebook.com", "instagram.com", "threads.net"), "Meta"),
         (("x.com", "twitter.com", "t.co"), "X / Twitter"),
         (("linkedin.com",), "LinkedIn"),
     )
-    for needles, label in groups:
-        if any(needle in value for needle in needles):
+    for domains, label in groups:
+        if any(value == domain or value.endswith(f".{domain}") for domain in domains):
             return label
     return host
 

@@ -79,13 +79,18 @@ def _rotated_candidate(path: Path, inode: int) -> Optional[Path]:
 
 
 def _source_key(path: Path, inode: int, offset: int, raw: bytes) -> str:
-    fingerprint = hashlib.sha256(raw).hexdigest()[:16]
+    fingerprint = _source_fingerprint(raw)
     return f"{path}:{inode}:{offset}:{fingerprint}"
+
+
+def _source_fingerprint(raw: bytes) -> str:
+    return hashlib.sha256(raw).hexdigest()[:16]
 
 
 def _record_tuple(source_key: str, site_id: int, row: ParsedRequest) -> tuple:
     return (
         source_key,
+        source_key.rsplit(":", 1)[-1],
         site_id,
         row.ts,
         row.day,

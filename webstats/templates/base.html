@@ -8,7 +8,7 @@
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
   {% block head %}{% endblock %}
 </head>
-<body data-page="{% block page_id %}{% endblock %}"{% block body_data %}{% endblock %}>
+<body data-page="{% block page_id %}{% endblock %}" data-server-today="{{ server_today|default('', true) }}"{% block body_data %}{% endblock %}>
   <header class="topbar">
     <a class="brand" href="{{ url_for('views.overview') }}" aria-label="Webstats overview">
       <span class="brand-mark">W</span>
@@ -31,4 +31,3 @@
   <script src="{{ url_for('static', filename='dashboard.js') }}"></script>
 </body>
 </html>
-

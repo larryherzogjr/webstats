@@ -31,7 +31,7 @@ class RollupTests(unittest.TestCase):
     def test_recompute_is_idempotent(self):
         site_id = site_id_map(self.conn)["example.com"]
         row = (
-            "source-1", site_id, 1790600000, "2026-09-28", "visitor", "GET",
+            "source-1", "fingerprint-1", site_id, 1790600000, "2026-09-28", "visitor", "GET",
             "/", None, 200, 10, None, None, "Mozilla/5.0", "Other browser",
             "Other", 0, 0, None,
         )
@@ -46,7 +46,7 @@ class RollupTests(unittest.TestCase):
         old_day = (date.today() - timedelta(days=200)).isoformat()
         site_id = site_id_map(self.conn)["example.com"]
         row = (
-            "source-old", site_id, 1, old_day, "visitor", "GET", "/old", None,
+            "source-old", "fingerprint-old", site_id, 1, old_day, "visitor", "GET", "/old", None,
             200, 10, None, None, "Mozilla/5.0", "Other browser", "Other", 0, 0, None,
         )
         insert_requests(self.conn, [row])

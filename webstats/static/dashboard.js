@@ -5,7 +5,9 @@
   const fmt = new Intl.NumberFormat();
   const colors = ["#6ee7c7", "#61a9ff", "#a78bfa", "#f5c66b", "#ff7a8a", "#5eead4", "#fb923c"];
   const charts = {};
-  let range = defaultRange(7);
+  const serverToday = document.body.dataset.serverToday || localDate(new Date());
+  const initialState = stateFromUrl();
+  let range = initialState.range;
   let pagesOffset = 0;
 
   function localDate(date) {
@@ -14,10 +16,23 @@
   }
 
   function defaultRange(days) {
-    const end = new Date();
-    const start = new Date();
-    start.setDate(start.getDate() - days + 1);
-    return { from: localDate(start), to: localDate(end) };
+    const end = new Date(`${serverToday}T12:00:00Z`);
+    const start = new Date(end);
+    start.setUTCDate(start.getUTCDate() - days + 1);
+    return { from: start.toISOString().slice(0, 10), to: serverToday };
+  }
+
+  function stateFromUrl() {
+    const params = new URLSearchParams(window.location.search);
+    const fallback = defaultRange(7);
+    const from = params.get("from") || fallback.from;
+    const to = params.get("to") || fallback.to;
+    const valid = /^\d{4}-\d{2}-\d{2}$/.test(from) && /^\d{4}-\d{2}-\d{2}$/.test(to) && from <= to;
+    return {
+      range: valid ? { from, to } : fallback,
+      bots: params.get("bots") === "1",
+      assets: params.get("assets") === "1",
+    };
   }
 
   function filters() {
@@ -29,6 +44,11 @@
 
   function query(extra = {}) {
     return new URLSearchParams({ ...range, ...filters(), ...extra }).toString();
+  }
+
+  function syncUrl(push = true) {
+    const url = `${window.location.pathname}?${query()}`;
+    window.history[push ? "pushState" : "replaceState"]({}, "", url);
   }
 
   async function api(url) {
@@ -57,8 +77,23 @@
     const from = document.querySelector("#date-from");
     const to = document.querySelector("#date-to");
     if (!from || !to) return;
-    from.value = range.from;
-    to.value = range.to;
+    const bots = document.querySelector("#include-bots");
+    const assets = document.querySelector("#include-assets");
+
+    function renderState(state) {
+      range = state.range;
+      from.value = range.from;
+      to.value = range.to;
+      if (bots) bots.checked = state.bots;
+      if (assets) assets.checked = state.assets;
+      document.querySelectorAll("[data-days]").forEach(button => {
+        const preset = defaultRange(Number(button.dataset.days));
+        button.classList.toggle("active", preset.from === range.from && preset.to === range.to);
+      });
+    }
+
+    renderState(initialState);
+    syncUrl(false);
     document.querySelectorAll("[data-days]").forEach(button => {
       button.addEventListener("click", () => {
         range = defaultRange(Number(button.dataset.days));
@@ -66,6 +101,7 @@
         to.value = range.to;
         document.querySelectorAll("[data-days]").forEach(item => item.classList.toggle("active", item === button));
         pagesOffset = 0;
+        syncUrl();
         reload();
       });
     });
@@ -74,12 +110,19 @@
       range = { from: from.value, to: to.value };
       document.querySelectorAll("[data-days]").forEach(item => item.classList.remove("active"));
       pagesOffset = 0;
+      syncUrl();
       reload();
     });
     document.querySelectorAll("#include-bots, #include-assets").forEach(input => input.addEventListener("change", () => {
       pagesOffset = 0;
+      syncUrl();
       reload();
     }));
+    window.addEventListener("popstate", () => {
+      renderState(stateFromUrl());
+      pagesOffset = 0;
+      reload();
+    });
   }
 
   function dateLabel(from, to) {
@@ -132,18 +175,21 @@
         const change = site.change_percent;
         const changeText = change === null ? "No prior data" : `${change > 0 ? "+" : ""}${change}%`;
         const changeClass = change > 0 ? "change-up" : change < 0 ? "change-down" : "";
-        return `<a class="site-card" href="/site/${encodeURIComponent(site.name)}"><span class="site-name">${escapeHtml(site.name)}</span><strong class="site-value">${fmt.format(site.requests)}</strong><span class="site-meta"><span>${fmt.format(site.unique_visitors)} daily visitors</span><span class="${changeClass}">${changeText}</span></span></a>`;
+        return `<a class="site-card" href="/site/${encodeURIComponent(site.name)}?${escapeHtml(query())}"><span class="site-name">${escapeHtml(site.name)}</span><strong class="site-value">${fmt.format(site.requests)}</strong><span class="site-meta"><span>${fmt.format(site.unique_visitors)} visitor-days</span><span class="${changeClass}">${changeText}</span></span></a>`;
       }).join("");
       const days = [...new Set(data.timeseries.map(row => row.day))];
-      const sites = [...new Set(data.timeseries.map(row => row.site))];
+      const sites = data.sites.map(site => site.name);
+      const seriesValues = new Map(
+        data.timeseries.map(row => [`${row.day}\0${row.site}`, row.requests])
+      );
       updateChart("overview", document.querySelector("#overview-chart"), {
         type: "line",
-        data: { labels: days, datasets: sites.map((site, index) => ({ label: site, data: days.map(day => data.timeseries.find(row => row.day === day && row.site === site)?.requests || 0), borderColor: colors[index % colors.length], backgroundColor: `${colors[index % colors.length]}22`, tension: .3, pointRadius: 2, fill: false })) },
+        data: { labels: days, datasets: sites.map((site, index) => ({ label: site, data: days.map(day => seriesValues.get(`${day}\0${site}`) || 0), borderColor: colors[index % colors.length], backgroundColor: `${colors[index % colors.length]}22`, tension: .3, pointRadius: 2, fill: false })) },
         options: chartOptions,
       });
       document.querySelector("#server-metrics").innerHTML = [
         metric("Total requests", fmt.format(data.totals.requests)),
-        metric("Daily visitors", fmt.format(data.totals.unique_visitors)),
+        metric("Visitor-days", fmt.format(data.totals.unique_visitors)),
         metric("Bandwidth", compactBytes(data.totals.bytes)),
         metric("Client error rate (4xx)", `${data.totals.client_error_rate}%`),
         metric("Server error rate (5xx)", `${data.totals.server_error_rate}%`),
@@ -163,8 +209,11 @@
     const site = document.body.dataset.site;
     try {
       const suffix = query();
+      const interval = range.from === range.to ? "hour" : "day";
+      const overviewLink = document.querySelector("#overview-link");
+      if (overviewLink) overviewLink.href = `/?${query()}`;
       const [series, pages, referrers, statuses, agents, countries] = await Promise.all([
-        api(`/api/site/${encodeURIComponent(site)}/timeseries?${suffix}`),
+        api(`/api/site/${encodeURIComponent(site)}/timeseries?${query({ interval })}`),
         api(`/api/site/${encodeURIComponent(site)}/pages?${suffix}&limit=25&offset=${pagesOffset}`),
         api(`/api/site/${encodeURIComponent(site)}/referrers?${suffix}`),
         api(`/api/site/${encodeURIComponent(site)}/status?${suffix}`),
@@ -173,11 +222,13 @@
       ]);
       updateChart("site", document.querySelector("#site-chart"), {
         type: "line",
-        data: { labels: series.series.map(row => row.bucket), datasets: [
+        data: { labels: series.series.map(row => interval === "hour" ? row.bucket.slice(11, 16) : row.bucket), datasets: [
           { label: "Requests", data: series.series.map(row => row.requests), borderColor: colors[0], backgroundColor: `${colors[0]}22`, tension: .3, fill: true },
-          { label: "Daily visitors", data: series.series.map(row => row.unique_visitors), borderColor: colors[1], backgroundColor: "transparent", tension: .3 },
+          { label: interval === "hour" ? "Hourly visitors" : "Daily visitors", data: series.series.map(row => row.unique_visitors), borderColor: colors[1], backgroundColor: "transparent", tension: .3 },
         ] }, options: chartOptions,
       });
+      const heading = document.querySelector("#traffic-heading");
+      if (heading) heading.textContent = interval === "hour" ? "Requests and hourly visitors" : "Requests and daily visitors";
       fillTable("#pages-table", pages.pages, [{ key: "path" }, { key: "requests", format: fmt.format }, { key: "unique_visitors", format: fmt.format }]);
       document.querySelector("#pages-prev").disabled = pagesOffset === 0;
       document.querySelector("#pages-next").disabled = pages.pages.length < 25;

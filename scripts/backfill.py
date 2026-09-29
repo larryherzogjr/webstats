@@ -4,17 +4,25 @@
 from __future__ import annotations
 
 import argparse
+from collections import defaultdict
+from datetime import datetime, timedelta
 import gzip
-import hashlib
 import logging
 import os
 from pathlib import Path
 from typing import Iterator, Optional
+from zoneinfo import ZoneInfo
 
 from webstats.config import load_config
 from webstats.db import connect, initialize, insert_requests, site_id_map
 from webstats.geo import GeoLookup
-from webstats.ingest import IngestStats, _record_tuple, _select_site, _source_key
+from webstats.ingest import (
+    IngestStats,
+    _record_tuple,
+    _select_site,
+    _source_fingerprint,
+    _source_key,
+)
 from webstats.logformat import compile_log_format
 from webstats.parser import ParseError, ParsedRequest, parse_line
 from webstats.rollup import maintain_rollups
@@ -51,6 +59,27 @@ def run(config_path: str) -> IngestStats:
     geo = GeoLookup(config.geoip.enabled, config.geoip.db_path)
     stats = IngestStats()
     seen_paths = set()
+    archive_occurrences: dict[tuple[int, str], int] = defaultdict(int)
+    existing_fingerprints = {
+        (row["site_id"], row["fingerprint"]): row["requests"]
+        for row in conn.execute(
+            """
+            SELECT site_id, source_fingerprint fingerprint, COUNT(*) requests
+            FROM requests GROUP BY site_id, source_fingerprint
+            """
+        )
+    }
+    cutoff = (
+        datetime.now(ZoneInfo(config.server.timezone)).date()
+        - timedelta(days=config.storage.raw_retention_days)
+    ).isoformat()
+    protected_days = {
+        row["day"]
+        for row in conn.execute(
+            "SELECT DISTINCT day FROM daily_site WHERE day < ?", (cutoff,)
+        )
+    }
+    protected_lines = 0
     try:
         for site in config.sites:
             for base in site.paths:
@@ -72,18 +101,36 @@ def run(config_path: str) -> IngestStats:
                             selected = _select_site(row.host, site.name, ids, compiled)
                             if selected is None:
                                 raise ParseError(f"Unknown host {row.host!r}")
+                            if row.day in protected_days:
+                                protected_lines += 1
+                                continue
                             if config.geoip.enabled:
                                 match = compiled.pattern.match(text)
                                 country = geo.country(match.group("remote_addr") if match else "")
                                 if country:
                                     row = ParsedRequest(**{**row.__dict__, "country": country})
+                            site_id = ids[selected]
+                            fingerprint = _source_fingerprint(raw)
                             if inode is not None and line_offset is not None:
-                                source = _source_key(path, inode, line_offset, raw)
+                                # An uncompressed rotated file is the same logical
+                                # source as the configured live log. Using the base
+                                # path preserves keys written before rotation.
+                                source = _source_key(base, inode, line_offset, raw)
                             else:
-                                digest = hashlib.sha256(raw).hexdigest()[:16]
-                                source = f"backfill:{path.resolve()}:{line_number}:{digest}"
-                            rows.append(_record_tuple(source, ids[selected], row))
+                                occurrence_key = (site_id, fingerprint)
+                                archive_occurrences[occurrence_key] += 1
+                                occurrence = archive_occurrences[occurrence_key]
+                                if occurrence <= existing_fingerprints.get(
+                                    occurrence_key, 0
+                                ):
+                                    stats.parsed += 1
+                                    continue
+                                source = (
+                                    f"content:{site_id}:{occurrence}:{fingerprint}"
+                                )
+                            rows.append(_record_tuple(source, site_id, row))
                             stats.parsed += 1
+                            stats.affected_days.add(row.day)
                         except ParseError as exc:
                             stats.parse_failures += 1
                             if stats.parse_failures <= 10:
@@ -95,9 +142,15 @@ def run(config_path: str) -> IngestStats:
                     stats.inserted += insert_requests(conn, rows)
                     conn.commit()
         maintain_rollups(
-            conn, config.storage.raw_retention_days,
+            conn, config.storage.raw_retention_days, stats.affected_days,
             timezone_name=config.server.timezone,
         )
+        if protected_lines:
+            LOG.warning(
+                "Skipped %d archived lines on historical days whose complete "
+                "rollups are already retained",
+                protected_lines,
+            )
     finally:
         geo.close()
         conn.close()

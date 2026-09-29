@@ -2,12 +2,15 @@ from dataclasses import replace
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 import bcrypt
 
 from webstats.app import create_app
-from webstats.auth import _credential_token
+from webstats.api import _referrer_group
+from webstats.auth import _attempts, _credential_token
 from webstats.config import Config, GeoIPConfig, ServerConfig, SiteConfig, StorageConfig
+from webstats.db import connect, site_id_map
 from webstats.ingest import ingest_once
 
 
@@ -20,6 +23,7 @@ def line(ip, path, status=200, ua="Mozilla/5.0 AppleWebKit/537.36 Chrome/128.0 S
 
 class ApiTests(unittest.TestCase):
     def setUp(self):
+        _attempts.clear()
         self.tempdir = tempfile.TemporaryDirectory()
         root = Path(self.tempdir.name)
         self.log = root / "example.access.log"
@@ -45,6 +49,7 @@ class ApiTests(unittest.TestCase):
         self.client = self.app.test_client()
 
     def tearDown(self):
+        _attempts.clear()
         self.tempdir.cleanup()
 
     def authenticate(self):
@@ -63,11 +68,41 @@ class ApiTests(unittest.TestCase):
             "/login", data={"username": "admin", "password": "password"}
         )
         self.assertEqual(response.status_code, 302)
+        with self.client.session_transaction() as session:
+            self.assertTrue(session.permanent)
         self.assertEqual(self.client.get("/").status_code, 200)
         self.assertEqual(self.client.get("/site/example.com").status_code, 200)
         self.assertEqual(self.client.get("/live").status_code, 200)
         self.assertEqual(self.client.get("/health").status_code, 200)
         self.assertEqual(self.client.get("/site/not-configured.test").status_code, 404)
+
+    def test_login_throttle_uses_forwarded_client_address(self):
+        first = {"X-Forwarded-For": "198.51.100.10"}
+        second = {"X-Forwarded-For": "198.51.100.11"}
+        with patch("webstats.auth.bcrypt.checkpw", return_value=False):
+            for _ in range(8):
+                response = self.client.post(
+                    "/login",
+                    data={"username": "admin", "password": "wrong"},
+                    headers=first,
+                )
+                self.assertEqual(response.status_code, 200)
+            self.assertEqual(
+                self.client.post(
+                    "/login",
+                    data={"username": "admin", "password": "wrong"},
+                    headers=first,
+                ).status_code,
+                429,
+            )
+            self.assertEqual(
+                self.client.post(
+                    "/login",
+                    data={"username": "admin", "password": "wrong"},
+                    headers=second,
+                ).status_code,
+                200,
+            )
 
     def test_geoip_attribution_appears_when_enabled(self):
         config = replace(
@@ -115,6 +150,17 @@ class ApiTests(unittest.TestCase):
         response = self.client.get("/api/overview?from=2026-09-28&to=2026-09-28&bots=1&assets=1")
         self.assertEqual(response.get_json()["sites"][0]["requests"], 4)
 
+    def test_overview_includes_zero_traffic_days(self):
+        self.authenticate()
+        response = self.client.get(
+            "/api/overview?from=2026-09-27&to=2026-09-29"
+        )
+        series = response.get_json()["timeseries"]
+        self.assertEqual(
+            [(row["day"], row["requests"]) for row in series],
+            [("2026-09-27", 0), ("2026-09-28", 2), ("2026-09-29", 0)],
+        )
+
     def test_detail_endpoints_match_hand_count(self):
         self.authenticate()
         query = "from=2026-09-28&to=2026-09-28"
@@ -125,6 +171,59 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(status["top_404"], [{"path": "/missing", "requests": 1}])
         series = self.client.get(f"/api/site/example.com/timeseries?{query}").get_json()["series"]
         self.assertEqual(series[0]["requests"], 2)
+
+    def test_site_timeseries_fills_daily_and_hourly_gaps(self):
+        self.authenticate()
+        daily = self.client.get(
+            "/api/site/example.com/timeseries?from=2026-09-27&to=2026-09-29"
+        ).get_json()["series"]
+        self.assertEqual(
+            [(row["bucket"], row["requests"]) for row in daily],
+            [("2026-09-27", 0), ("2026-09-28", 2), ("2026-09-29", 0)],
+        )
+        hourly = self.client.get(
+            "/api/site/example.com/timeseries?from=2026-09-28&to=2026-09-28&interval=hour"
+        ).get_json()["series"]
+        self.assertEqual(len(hourly), 24)
+        self.assertEqual(sum(row["requests"] for row in hourly), 2)
+        self.assertEqual(hourly[0]["bucket"], "2026-09-28T00:00:00-0500")
+
+    def test_referrer_groups_use_host_boundaries_and_limit_after_grouping(self):
+        self.assertEqual(_referrer_group("t.co"), "X / Twitter")
+        self.assertEqual(_referrer_group("subdomain.x.com"), "X / Twitter")
+        self.assertEqual(_referrer_group("www.google.com"), "Google")
+        for host in (
+            "reddit.com",
+            "microsoft.com",
+            "netflix.com",
+            "box.com",
+            "google.evil.com",
+        ):
+            self.assertEqual(_referrer_group(host), host)
+
+        with connect(self.config.storage.db_path) as conn:
+            site_id = site_id_map(conn)["example.com"]
+            rows = [
+                (site_id, "2026-09-28", f"source{index}.x.com", 1, 1, 1, 1)
+                for index in range(30)
+            ]
+            rows.append((site_id, "2026-09-28", "reddit.com", 100, 100, 100, 100))
+            conn.executemany(
+                "INSERT INTO daily_referrer VALUES (?, ?, ?, ?, ?, ?, ?)", rows
+            )
+            conn.commit()
+
+        self.authenticate()
+        response = self.client.get(
+            "/api/site/example.com/referrers?from=2026-09-28&to=2026-09-28"
+        )
+        self.assertEqual(
+            response.get_json()["referrers"],
+            [
+                {"group": "reddit.com", "requests": 100},
+                {"group": "X / Twitter", "requests": 30},
+            ],
+        )
 
     def test_invalid_range_is_rejected(self):
         self.authenticate()
