@@ -20,10 +20,10 @@ geoip = ["maxminddb==2.8.2"]
 [project.scripts]
 webstats = "webstats.app:main"
 webstats-ingest = "webstats.ingest:main"
+webstats-chronicle = "webstats.chronicle:main"
 
 [tool.setuptools.packages.find]
 include = ["webstats*"]
 
 [tool.setuptools.package-data]
 webstats = ["templates/*.html", "static/*"]
-

@@ -227,6 +227,7 @@ def health():
     last_run = None
     site_count = 0
     request_count = 0
+    last_chronicle = None
     try:
         with _conn() as conn:
             row = conn.execute(
@@ -238,6 +239,16 @@ def health():
             last_run = dict(row) if row else None
             site_count = conn.execute("SELECT COUNT(*) FROM sites").fetchone()[0]
             request_count = conn.execute("SELECT COUNT(*) FROM requests").fetchone()[0]
+            chronicle = conn.execute(
+                """
+                SELECT MAX(captured_at) captured_at,
+                       COUNT(DISTINCT site_id) observed_sites
+                FROM chronicle_snapshots
+                WHERE captured_at=(SELECT MAX(captured_at) FROM chronicle_snapshots)
+                """
+            ).fetchone()
+            if chronicle and chronicle["captured_at"]:
+                last_chronicle = dict(chronicle)
     except sqlite3.Error:
         pass
     logs = [
@@ -260,6 +271,7 @@ def health():
         {
             "status": "ok" if ok else "degraded",
             "last_ingest": last_run,
+            "last_chronicle": last_chronicle,
             "database_bytes": db_path.stat().st_size if db_path.exists() else 0,
             "sites": site_count,
             "raw_requests": request_count,
@@ -1860,6 +1872,140 @@ def performance_reliability():
         "error_paths": actionable_error_paths[:25],
         "probe_error_requests": probe_error_requests,
         "narrative": narrative,
+    })
+
+
+@api_bp.get("/chronicle")
+@login_required
+def living_chronicle():
+    start, end = _date_range()
+    limit = _int_arg("limit", 250, 1, 500)
+    search = request.args.get("q", "").strip()[:200]
+    kind = request.args.get("kind", "").strip()
+    allowed_kinds = {
+        "baseline", "published", "updated", "republished", "redirected",
+        "disappeared", "sitemap_removed", "robots_changed",
+        "sitemap_status_changed",
+    }
+    if kind and kind not in allowed_kinds:
+        raise ApiError("Unknown chronicle event kind")
+    with _conn() as conn:
+        site = _requested_site(conn)
+        clauses = ["e.day BETWEEN ? AND ?"]
+        parameters: list[Any] = [start, end]
+        if site:
+            clauses.append("e.site_id=?")
+            parameters.append(site["id"])
+        if kind:
+            clauses.append("e.kind=?")
+            parameters.append(kind)
+        if search:
+            clauses.append("(e.path LIKE ? OR e.summary LIKE ? OR s.name LIKE ?)")
+            term = f"%{search}%"
+            parameters.extend([term, term, term])
+        parameters.append(limit)
+        events = [
+            dict(row) for row in conn.execute(
+                f"""
+                SELECT e.id, e.occurred_at, e.day, e.kind, e.path, e.summary,
+                       e.from_value, e.to_value, s.name site
+                FROM chronicle_events e JOIN sites s ON s.id=e.site_id
+                WHERE {' AND '.join(clauses)}
+                ORDER BY e.occurred_at DESC, e.id DESC LIMIT ?
+                """,
+                tuple(parameters),
+            )
+        ]
+        site_clause = "WHERE p.site_id=?" if site else ""
+        site_parameters = (site["id"],) if site else ()
+        states = {
+            row["state"]: row["count"] for row in conn.execute(
+                f"SELECT p.state, COUNT(*) count FROM chronicle_pages p "
+                f"{site_clause} GROUP BY p.state",
+                site_parameters,
+            )
+        }
+        latest = [
+            dict(row) for row in conn.execute(
+                f"""
+                SELECT s.name site, c.captured_at, c.sitemap_status,
+                       c.page_count, c.robots_status, c.error_count, c.limited
+                FROM chronicle_snapshots c JOIN sites s ON s.id=c.site_id
+                JOIN (
+                    SELECT site_id, MAX(captured_at) captured_at
+                    FROM chronicle_snapshots GROUP BY site_id
+                ) newest ON newest.site_id=c.site_id
+                    AND newest.captured_at=c.captured_at
+                {('WHERE c.site_id=?' if site else '')}
+                ORDER BY s.name
+                """,
+                site_parameters,
+            )
+        ]
+        policy_versions = [
+            dict(row) for row in conn.execute(
+                f"""
+                SELECT s.name site, c.captured_at, c.robots_status,
+                       c.robots_digest, c.robots_text
+                FROM chronicle_snapshots c JOIN sites s ON s.id=c.site_id
+                WHERE c.id IN (
+                    SELECT MIN(c2.id) FROM chronicle_snapshots c2
+                    {('WHERE c2.site_id=?' if site else '')}
+                    GROUP BY c2.site_id, c2.robots_status, c2.robots_digest
+                )
+                ORDER BY c.captured_at DESC LIMIT 50
+                """,
+                site_parameters,
+            )
+        ]
+        event_ids = [item["id"] for item in events if item["path"]]
+        reactions: dict[int, dict[str, Any]] = {}
+        if event_ids:
+            placeholders = ",".join("?" for _ in event_ids)
+            agent_names = tuple(set(AI_AGENTS) | set(SEARCH_CRAWLERS))
+            agent_placeholders = ",".join("?" for _ in agent_names)
+            for row in conn.execute(
+                f"""
+                SELECT e.id event_id, MIN(a.day) first_day,
+                       SUM(CASE WHEN a.ua_family IN ({','.join('?' for _ in AI_AGENTS)})
+                                THEN a.requests-a.asset_requests ELSE 0 END) ai_requests,
+                       SUM(CASE WHEN a.ua_family IN ({','.join('?' for _ in SEARCH_CRAWLERS)})
+                                THEN a.requests-a.asset_requests ELSE 0 END) search_requests
+                FROM chronicle_events e
+                JOIN daily_page_agent a ON a.site_id=e.site_id AND a.path=e.path
+                    AND a.day>=e.day AND a.day<=?
+                    AND a.ua_family IN ({agent_placeholders})
+                WHERE e.id IN ({placeholders})
+                GROUP BY e.id
+                """,
+                tuple(AI_AGENTS) + tuple(SEARCH_CRAWLERS) + (end,) + agent_names + tuple(event_ids),
+            ):
+                reactions[row["event_id"]] = dict(row)
+
+    for item in events:
+        reaction = reactions.get(item["id"], {})
+        if item["site"] in INDIVIDUAL_ACTIVITY_PRIVATE_SITES:
+            item["crawler_reaction"] = None
+        else:
+            item["crawler_reaction"] = {
+                "first_day": reaction.get("first_day"),
+                "ai_requests": reaction.get("ai_requests", 0) or 0,
+                "search_requests": reaction.get("search_requests", 0) or 0,
+            }
+    kind_counts: dict[str, int] = defaultdict(int)
+    for item in events:
+        kind_counts[item["kind"]] += 1
+    return jsonify({
+        "from": start, "to": end,
+        "scope": {"site": site["name"] if site else None},
+        "query": search, "kind": kind,
+        "events": events, "kind_counts": kind_counts,
+        "states": states, "latest": latest, "policy_versions": policy_versions,
+        "limited": len(events) == limit,
+        "privacy": {
+            "protected_sites": sorted(INDIVIDUAL_ACTIVITY_PRIVATE_SITES),
+            "note": "Public inventory changes are retained; private page-level crawler reactions are hidden.",
+        },
     })
 
 

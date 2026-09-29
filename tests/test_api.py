@@ -90,6 +90,7 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(self.client.get("/briefings").status_code, 200)
         self.assertEqual(self.client.get("/changes").status_code, 200)
         self.assertEqual(self.client.get("/content").status_code, 200)
+        self.assertEqual(self.client.get("/chronicle").status_code, 200)
         self.assertEqual(self.client.get("/episodes").status_code, 200)
         self.assertEqual(self.client.get("/reliability").status_code, 200)
         self.assertEqual(self.client.get("/pulse").status_code, 200)
@@ -173,6 +174,7 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(body["status"], "ok")
         self.assertEqual(body["logs"][0]["id"], "log-1")
         self.assertNotIn(str(self.log), response.get_data(as_text=True))
+        self.assertIsNone(body["last_chronicle"])
 
     def test_overview_defaults_to_humans_without_assets(self):
         self.authenticate()
@@ -185,6 +187,59 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(body["totals"]["error_rate"], 50.0)
         response = self.client.get("/api/overview?from=2026-09-28&to=2026-09-28&bots=1&assets=1")
         self.assertEqual(response.get_json()["sites"][0]["requests"], 4)
+
+    def test_chronicle_starts_empty(self):
+        self.authenticate()
+        response = self.client.get(
+            "/api/chronicle?from=2026-09-28&to=2026-09-29"
+        )
+        self.assertEqual(response.status_code, 200)
+        body = response.get_json()
+        self.assertEqual(body["events"], [])
+        self.assertEqual(body["latest"], [])
+
+    def test_chronicle_search_and_crawler_reactions(self):
+        self.authenticate()
+        with connect(self.config.storage.db_path) as conn:
+            site_id = site_id_map(conn)["example.com"]
+            snapshot = conn.execute(
+                """
+                INSERT INTO chronicle_snapshots(
+                    site_id, captured_at, day, sitemap_status, sitemap_digest,
+                    page_count, robots_status, robots_digest, robots_text
+                ) VALUES (?, 1790630000, '2026-09-28', 'available', 'map', 1,
+                          'available', 'rules', 'User-agent: *')
+                """,
+                (site_id,),
+            ).lastrowid
+            conn.execute(
+                """
+                INSERT INTO chronicle_events(
+                    site_id, snapshot_id, occurred_at, day, kind, path,
+                    summary, event_key
+                ) VALUES (?, ?, 1790630000, '2026-09-28', 'published',
+                          '/essay', 'A page appeared.', 'chronicle-test')
+                """,
+                (site_id, snapshot),
+            )
+            conn.execute(
+                """
+                INSERT INTO daily_page_agent(
+                    site_id, day, path, ua_family, is_bot, requests,
+                    asset_requests
+                ) VALUES (?, '2026-09-29', '/essay', 'GPTBot', 1, 3, 0)
+                """,
+                (site_id,),
+            )
+            conn.commit()
+        response = self.client.get(
+            "/api/chronicle?from=2026-09-28&to=2026-09-29&q=essay&kind=published"
+        )
+        self.assertEqual(response.status_code, 200)
+        body = response.get_json()
+        self.assertEqual(body["events"][0]["path"], "/essay")
+        self.assertEqual(body["events"][0]["crawler_reaction"]["ai_requests"], 3)
+        self.assertEqual(body["policy_versions"][0]["robots_digest"], "rules")
 
     def test_overview_includes_zero_traffic_days(self):
         self.authenticate()

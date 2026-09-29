@@ -122,6 +122,15 @@ def content_observatory():
     )
 
 
+@views_bp.get("/chronicle")
+@login_required
+def chronicle():
+    return render_template(
+        "chronicle.html", server_today=_server_today(), force_bots=True,
+        hide_assets=True, site_filter=True,
+    )
+
+
 @views_bp.get("/episodes")
 @login_required
 def episodes():

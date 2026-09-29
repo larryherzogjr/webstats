@@ -1,0 +1,58 @@
+{% extends "base.html" %}
+{% block title %}Living Web Chronicle | Webstats{% endblock %}
+{% block page_id %}chronicle{% endblock %}
+{% block content %}
+<div class="page-heading">
+  <div><p class="eyebrow">A memory for every site</p><h1>Living Web Chronicle</h1></div>
+  <p id="range-label" class="range-label"></p>
+</div>
+{% include "_filters.html" %}
+<section class="chronicle-search" aria-label="Chronicle search">
+  <label>Event <select id="chronicle-kind">
+    <option value="">All changes</option>
+    <option value="published">Published</option>
+    <option value="updated">Updated</option>
+    <option value="republished">Republished</option>
+    <option value="redirected">Redirected</option>
+    <option value="disappeared">Disappeared</option>
+    <option value="sitemap_removed">Left sitemap</option>
+    <option value="robots_changed">Robots changed</option>
+    <option value="sitemap_status_changed">Sitemap status</option>
+    <option value="baseline">Baseline</option>
+  </select></label>
+  <label class="chronicle-query">Search <input id="chronicle-query" type="search" maxlength="200" placeholder="Path, site, or event"></label>
+  <button id="chronicle-search">Search</button>
+</section>
+<div id="page-error" class="alert hidden" role="alert"></div>
+<div id="chronicle-privacy" class="alert hidden" role="status"></div>
+<section class="panel chronicle-hero">
+  <div class="panel-heading">
+    <div><p class="eyebrow">Automatic site archaeology</p><h2 id="chronicle-heading">Waiting for the first observation</h2></div>
+    <span class="legend-note">Public sitemaps · robots.txt · crawler reactions</span>
+  </div>
+  <p id="chronicle-narrative" class="reliability-lead"></p>
+</section>
+<section id="chronicle-metrics" class="metric-grid" aria-label="Chronicle summary"></section>
+<section class="panel">
+  <div class="panel-heading">
+    <div><p class="eyebrow">Latest observation</p><h2>Site state</h2></div>
+    <span class="legend-note">The scheduled observer refreshes this automatically</span>
+  </div>
+  <div id="chronicle-sites" class="content-site-grid"></div>
+</section>
+<section class="panel chronicle-timeline-panel">
+  <div class="panel-heading">
+    <div><p class="eyebrow">Searchable history</p><h2>Evolution timeline</h2></div>
+    <span id="chronicle-count" class="legend-note"></span>
+  </div>
+  <ol id="chronicle-events" class="chronicle-timeline" aria-live="polite"></ol>
+</section>
+<section class="panel">
+  <div class="panel-heading">
+    <div><p class="eyebrow">Policy archive</p><h2>robots.txt versions</h2></div>
+    <span class="legend-note">One row per distinct policy state</span>
+  </div>
+  <div class="table-wrap"><table><thead><tr><th>Observed</th><th>Site</th><th>Status</th><th>Policy fingerprint</th><th>Rules</th></tr></thead><tbody id="chronicle-policies"></tbody></table></div>
+</section>
+<p class="muted methodology-note">The Chronicle takes bounded snapshots of public sitemap and robots policy state. It stores compact changes, not full sitemap copies. When a page leaves a sitemap, Webstats probes at most 64 removed URLs per site and scan to distinguish a redirect, a 404/410 disappearance, and an unlisted but reachable page. Network failures never mark every page removed. Crawler reactions use permanent daily rollups; page-level reactions remain hidden for privacy-protected sites.</p>
+{% endblock %}

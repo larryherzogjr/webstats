@@ -53,6 +53,10 @@ log paths, retention, timezone, and log format all live in TOML configuration.
   identifies never-observed, crawler-only, quiet, and crawler-heavy pages,
   measures search and AI coverage, finds active pages outside the published
   inventory, and surfaces current robots/sitemap policy collisions.
+- A Living Web Chronicle that keeps a compact, searchable history of public
+  sitemap and robots-policy changes, detects publishing, updates, removals,
+  redirects, disappearances, and returns, and connects each page change with
+  later search and AI crawler reactions.
 - Content Pulse classifications for debuts, rising and cooling pages,
   evergreen content, dormant pages, and content resurfacing after a long quiet
   spell, with the referrer, country, and AI activity behind each signal.
@@ -134,21 +138,30 @@ response-size summaries. Latency naturally begins after the timed nginx format
 is installed; migration rebuilds response-size and error history from retained
 raw rows. Performance details exclude privacy-protected sites.
 
-The AI Policy Observatory keeps no policy archive. It caches current public
-`robots.txt` responses in application memory for 15 minutes and compares those
-current rules with the selected historical traffic window. Its conflict label
+The AI Policy Observatory caches current public `robots.txt` responses in
+application memory for 15 minutes and compares those current rules with the
+selected historical traffic window. Its conflict label
 therefore means “this observed path is disallowed now,” not necessarily that
-the same rule existed when the request occurred.
+the same rule existed when the request occurred. The separate Living Web
+Chronicle archives each distinct observed policy state for future comparisons.
 
 The Content Observatory follows sitemap declarations in `robots.txt` and falls
 back to the conventional `/sitemap.xml`, `/sitemap_index.xml`, and
 `/sitemap-index.xml` locations. Discovery accepts only same-site HTTPS URLs,
 follows only same-site HTTPS redirects, ignores static-asset entries, and is
 capped at eight seconds, 24 sitemap documents, and 10,000 page URLs per site.
-Current sitemap
-inventories are held in application memory for 30 minutes; no fetched document
-or new visitor identifier is written to the database. Page-level comparisons
-remain disabled for privacy-protected sites.
+Current sitemap inventories are held in application memory for 30 minutes by
+the interactive Observatory. The scheduled Chronicle stores compact inventory
+state and changes, not complete sitemap documents or new visitor identifiers.
+Page-level traffic comparisons remain disabled for privacy-protected sites.
+
+The Chronicle observer runs twice daily by default. It accepts only bounded,
+same-site HTTPS sitemap discovery. When a page leaves an available sitemap, it
+probes at most 64 removed URLs per site per run without following redirects, so
+it can distinguish a same-site redirect, HTTP 404/410 disappearance, and an
+unlisted page that remains reachable. An unavailable sitemap never causes a
+mass-removal event. Public inventory changes are retained for all configured
+sites; page-level crawler reactions remain hidden for privacy-protected sites.
 
 ## Fresh installation in 14 steps
 
@@ -184,7 +197,7 @@ actual access-log paths and format are confirmed.
     `sudo cp /opt/webstats/deploy/webstats*.service /opt/webstats/deploy/webstats*.timer /etc/systemd/system/`
     then `sudo systemctl daemon-reload`.
 12. Start ingestion and the dashboard:
-    `sudo systemctl enable --now webstats-ingest.timer webstats.service`.
+    `sudo systemctl enable --now webstats-ingest.timer webstats-chronicle.timer webstats.service`.
 13. Install `deploy/nginx-stats-http.conf` as the temporary vhost, reload nginx,
     obtain the certificate with the server's existing Certbot nginx convention,
     then replace it with `deploy/nginx-stats.conf`. Adjust certificate paths if
@@ -296,6 +309,10 @@ not imported. Webstats history begins when the dedicated log is enabled.
 - Follow app logs: `journalctl -u webstats.service -f`.
 - Follow ingest logs: `journalctl -u webstats-ingest.service -f`.
 - Inspect timer state: `systemctl list-timers webstats-ingest.timer`.
+- Run a Chronicle observation now:
+  `/opt/webstats/.venv/bin/python -m webstats.chronicle --config /etc/webstats/config.toml`.
+- Inspect Chronicle observations: `systemctl list-timers webstats-chronicle.timer`
+  and `journalctl -u webstats-chronicle.service`.
 - Inspect GeoIP updates: `systemctl list-timers webstats-geoip-update.timer` and
   `journalctl -u webstats-geoip-update.service`.
 - Change the password by rerunning `scripts/set_password.py`.
@@ -330,6 +347,7 @@ All routes require the admin session except `/api/health`:
 - `GET /api/pulse?site=&limit=`
 - `GET /api/episodes?from=&to=&site=&limit=`
 - `GET /api/reliability?from=&to=&site=&limit=`
+- `GET /api/chronicle?from=&to=&site=&kind=&q=&limit=`
 - `GET /api/errors?site=&days=7|30|90&limit=`
 - `GET /api/journeys?from=&to=&site=`
 - `GET /api/link-atlas?from=&to=&site=&source=&limit=`

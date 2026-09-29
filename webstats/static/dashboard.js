@@ -15,6 +15,8 @@
   let scopeSite = initialState.site;
   let linkSource = initialState.source;
   let inboxCategory = initialState.category;
+  let chronicleKind = initialState.kind;
+  let chronicleQuery = initialState.q;
   let inboxSeenAt = readInboxSeenAt();
   let galaxyData = null;
   let errorsDays = [7, 30, 90].includes(Number(new URLSearchParams(window.location.search).get("days")))
@@ -52,6 +54,8 @@
       site: params.get("site") || "",
       source: params.get("source") || "",
       category: params.get("category") || "",
+      kind: params.get("kind") || "",
+      q: params.get("q") || "",
     };
   }
 
@@ -78,6 +82,10 @@
     if (page === "page") return { path: document.body.dataset.path };
     if (page === "link-atlas" && linkSource) return { source: linkSource };
     if (page === "inbox" && inboxCategory) return { category: inboxCategory };
+    if (page === "chronicle") return {
+      ...(chronicleKind ? { kind: chronicleKind } : {}),
+      ...(chronicleQuery ? { q: chronicleQuery } : {}),
+    };
     return {};
   }
 
@@ -150,12 +158,20 @@
       scopeSite = state.site;
       if (page === "link-atlas") linkSource = state.source;
       if (page === "inbox") inboxCategory = state.category;
+      if (page === "chronicle") {
+        chronicleKind = state.kind;
+        chronicleQuery = state.q;
+      }
       from.value = range.from;
       to.value = range.to;
       if (bots) bots.checked = state.bots;
       if (assets) assets.checked = state.assets;
       const siteSelect = document.querySelector("#site-filter");
       if (siteSelect) siteSelect.value = scopeSite;
+      const chronicleKindSelect = document.querySelector("#chronicle-kind");
+      if (chronicleKindSelect) chronicleKindSelect.value = chronicleKind;
+      const chronicleQueryInput = document.querySelector("#chronicle-query");
+      if (chronicleQueryInput) chronicleQueryInput.value = chronicleQuery;
       document.querySelectorAll("[data-days]").forEach(button => {
         const preset = defaultRange(Number(button.dataset.days));
         button.classList.toggle("active", preset.from === range.from && preset.to === range.to);
@@ -1734,6 +1750,72 @@
     } catch (error) { showError(error); }
   }
 
+  function chronicleEventLabel(kind) {
+    return ({
+      baseline: "Baseline", published: "Published", updated: "Updated",
+      republished: "Republished", redirected: "Redirected",
+      disappeared: "Disappeared", sitemap_removed: "Left sitemap",
+      robots_changed: "Robots changed",
+      sitemap_status_changed: "Sitemap status",
+    })[kind] || kind.replaceAll("_", " ");
+  }
+
+  async function loadChronicle() {
+    clearError();
+    try {
+      const data = await api(`/api/chronicle?${query({ limit: "500" })}`);
+      document.querySelector("#range-label").textContent = dateLabel(data.from, data.to);
+      const stateTotal = Object.values(data.states).reduce((sum, value) => sum + value, 0);
+      const meaningful = data.events.filter(item => item.kind !== "baseline").length;
+      document.querySelector("#chronicle-heading").textContent = data.latest.length
+        ? `${fmt.format(meaningful)} change${meaningful === 1 ? "" : "s"} in this window`
+        : "Run the Chronicle observer to establish a baseline";
+      document.querySelector("#chronicle-narrative").textContent = data.latest.length
+        ? `Webstats remembers ${fmt.format(stateTotal)} discovered page${stateTotal === 1 ? "" : "s"} across ${fmt.format(data.latest.length)} observed site${data.latest.length === 1 ? "" : "s"}, and connects content changes with the crawlers that followed.`
+        : "No persistent public-inventory observation has been recorded yet.";
+      document.querySelector("#chronicle-metrics").innerHTML = [
+        metric("Published now", fmt.format(data.states.published || 0)),
+        metric("Redirected", fmt.format(data.states.redirected || 0)),
+        metric("Disappeared", fmt.format(data.states.disappeared || 0)),
+        metric("Unlisted", fmt.format(data.states.unlisted || 0)),
+        metric("Events shown", fmt.format(data.events.length)),
+        metric("Policy versions", fmt.format(data.policy_versions.length)),
+      ].join("");
+      document.querySelector("#chronicle-sites").innerHTML = data.latest.length
+        ? data.latest.map(item => {
+          const observed = new Date(item.captured_at * 1000).toLocaleString();
+          const warning = item.error_count || item.limited;
+          return `<article class="content-site-card ${warning ? "unavailable" : "available"}"><div><span class="content-status">${escapeHtml(item.sitemap_status)}</span><strong>${escapeHtml(item.site)}</strong></div><div class="content-site-number">${fmt.format(item.page_count)}<small>published pages</small></div><p>robots.txt ${escapeHtml(item.robots_status)} · observed ${escapeHtml(observed)}${item.limited ? " · bounded" : ""}</p></article>`;
+        }).join("")
+        : '<p class="empty">No site snapshots yet.</p>';
+      document.querySelector("#chronicle-count").textContent = `${fmt.format(data.events.length)} result${data.events.length === 1 ? "" : "s"}${data.limited ? "+" : ""}`;
+      document.querySelector("#chronicle-events").innerHTML = data.events.length
+        ? data.events.map(item => {
+          const reaction = item.crawler_reaction;
+          const reactionText = reaction === null
+            ? "Crawler reaction hidden by site privacy policy"
+            : reaction && (reaction.ai_requests || reaction.search_requests)
+              ? `${fmt.format(reaction.search_requests)} search · ${fmt.format(reaction.ai_requests)} AI crawler requests${reaction.first_day ? ` since ${reaction.first_day}` : ""}`
+              : item.path ? "No recognized crawler reaction yet" : "Site-level change";
+          const title = item.path
+            ? `<a href="${escapeHtml(pageStoryHref(item, data.from, data.to))}">${escapeHtml(item.path)}</a>`
+            : `<strong>${escapeHtml(item.site)}</strong>`;
+          return `<li class="chronicle-event ${escapeHtml(item.kind)}"><span class="chronicle-marker"></span><div class="chronicle-event-body"><div class="chronicle-event-top"><span class="reliability-badge">${escapeHtml(chronicleEventLabel(item.kind))}</span><time>${escapeHtml(new Date(item.occurred_at * 1000).toLocaleString())}</time></div>${title}<small>${escapeHtml(item.site)}</small><p>${escapeHtml(item.summary)}</p><span class="chronicle-reaction">${escapeHtml(reactionText)}</span></div></li>`;
+        }).join("")
+        : '<li class="empty">No matching site changes in this range.</li>';
+      document.querySelector("#chronicle-policies").innerHTML = data.policy_versions.length
+        ? data.policy_versions.map(item => {
+          const lines = item.robots_text ? item.robots_text.split(/\r?\n/).filter(Boolean).length : 0;
+          return `<tr><td>${escapeHtml(new Date(item.captured_at * 1000).toLocaleString())}</td><td>${escapeHtml(item.site)}</td><td>${escapeHtml(item.robots_status)}</td><td><code>${escapeHtml(item.robots_digest.slice(0, 12))}</code></td><td>${fmt.format(lines)} non-empty line${lines === 1 ? "" : "s"}</td></tr>`;
+        }).join("")
+        : '<tr><td colspan="5" class="empty">No robots.txt versions archived yet.</td></tr>';
+      const privacy = document.querySelector("#chronicle-privacy");
+      const protectedScope = data.scope.site && data.privacy.protected_sites.includes(data.scope.site);
+      privacy.classList.toggle("hidden", !protectedScope);
+      if (protectedScope) privacy.textContent = data.privacy.note;
+    } catch (error) { showError(error); }
+  }
+
   function unixTime(value) {
     return value ? escapeHtml(new Date(value * 1000).toLocaleString()) : "Never";
   }
@@ -1805,6 +1887,25 @@
     setupFilters(loadContentObservatory);
     setupSiteFilter(() => { syncUrl(); loadContentObservatory(); });
     loadContentObservatory();
+  }
+  if (page === "chronicle") {
+    setupFilters(loadChronicle);
+    setupSiteFilter(() => { syncUrl(); loadChronicle(); });
+    document.querySelector("#chronicle-kind")?.addEventListener("change", event => {
+      chronicleKind = event.target.value;
+      syncUrl();
+      loadChronicle();
+    });
+    const runChronicleSearch = () => {
+      chronicleQuery = document.querySelector("#chronicle-query")?.value.trim() || "";
+      syncUrl();
+      loadChronicle();
+    };
+    document.querySelector("#chronicle-search")?.addEventListener("click", runChronicleSearch);
+    document.querySelector("#chronicle-query")?.addEventListener("keydown", event => {
+      if (event.key === "Enter") runChronicleSearch();
+    });
+    loadChronicle();
   }
   if (page === "pulse") {
     setupSiteFilter(() => {

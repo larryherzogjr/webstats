@@ -10,7 +10,7 @@ from .bots import classify_user_agent
 from .config import Config
 
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -226,6 +226,55 @@ CREATE TABLE IF NOT EXISTS events (
 CREATE INDEX IF NOT EXISTS events_day ON events(day, occurred_at DESC);
 CREATE INDEX IF NOT EXISTS events_site_day
     ON events(site_id, day, occurred_at DESC);
+CREATE TABLE IF NOT EXISTS chronicle_snapshots (
+    id INTEGER PRIMARY KEY,
+    site_id INTEGER NOT NULL REFERENCES sites(id),
+    captured_at INTEGER NOT NULL,
+    day TEXT NOT NULL,
+    sitemap_status TEXT NOT NULL,
+    sitemap_digest TEXT NOT NULL,
+    page_count INTEGER NOT NULL,
+    robots_status TEXT NOT NULL,
+    robots_digest TEXT NOT NULL,
+    robots_text TEXT NOT NULL,
+    error_count INTEGER NOT NULL DEFAULT 0,
+    limited INTEGER NOT NULL DEFAULT 0 CHECK (limited IN (0, 1)),
+    UNIQUE(site_id, captured_at)
+);
+CREATE INDEX IF NOT EXISTS chronicle_snapshots_site_time
+    ON chronicle_snapshots(site_id, captured_at DESC);
+CREATE TABLE IF NOT EXISTS chronicle_pages (
+    site_id INTEGER NOT NULL REFERENCES sites(id),
+    path TEXT NOT NULL,
+    url TEXT NOT NULL,
+    lastmod TEXT,
+    first_seen_at INTEGER NOT NULL,
+    last_seen_at INTEGER NOT NULL,
+    removed_at INTEGER,
+    state TEXT NOT NULL,
+    http_status INTEGER,
+    redirect_to TEXT,
+    PRIMARY KEY(site_id, path)
+);
+CREATE INDEX IF NOT EXISTS chronicle_pages_state
+    ON chronicle_pages(site_id, state, last_seen_at DESC);
+CREATE TABLE IF NOT EXISTS chronicle_events (
+    id INTEGER PRIMARY KEY,
+    site_id INTEGER NOT NULL REFERENCES sites(id),
+    snapshot_id INTEGER REFERENCES chronicle_snapshots(id),
+    occurred_at INTEGER NOT NULL,
+    day TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    path TEXT,
+    summary TEXT NOT NULL,
+    from_value TEXT,
+    to_value TEXT,
+    event_key TEXT NOT NULL UNIQUE
+);
+CREATE INDEX IF NOT EXISTS chronicle_events_day
+    ON chronicle_events(day, occurred_at DESC);
+CREATE INDEX IF NOT EXISTS chronicle_events_site_day
+    ON chronicle_events(site_id, day, occurred_at DESC);
 """
 
 
@@ -316,6 +365,10 @@ def _migrate_6_to_7(conn: sqlite3.Connection) -> None:
     _recompute_retained_days(conn)
 
 
+def _migrate_7_to_8(conn: sqlite3.Connection) -> None:
+    _execute_schema(conn)
+
+
 MIGRATIONS = {
     1: _migrate_1_to_2,
     2: _migrate_2_to_3,
@@ -323,6 +376,7 @@ MIGRATIONS = {
     4: _migrate_4_to_5,
     5: _migrate_5_to_6,
     6: _migrate_6_to_7,
+    7: _migrate_7_to_8,
 }
 
 
