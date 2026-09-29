@@ -3,11 +3,31 @@
 from __future__ import annotations
 
 import sqlite3
+from collections import defaultdict
 from datetime import datetime, timedelta
 from typing import Iterable, Optional
 from zoneinfo import ZoneInfo
 
 from .bots import AI_AGENTS, classify_feed_reader
+
+
+VISITOR_MILESTONES = (
+    100, 250, 500, 1_000, 2_500, 5_000, 10_000, 25_000, 50_000,
+    100_000, 250_000, 500_000, 1_000_000,
+)
+SUBSCRIBER_MILESTONES = (
+    10, 25, 50, 100, 250, 500, 1_000, 2_500, 5_000, 10_000,
+)
+SUMMARY_EVENT_KINDS = (
+    "traffic_record", "traffic_spike", "visitor_milestone",
+    "feed_subscriber_milestone",
+)
+PROBE_PATH_PREFIXES = (
+    "/.env", "/.git", "/.svn", "/wp-admin", "/wp-content",
+    "/wp-includes", "/vendor/phpunit", "/cgi-bin/", "/actuator",
+    "/_profiler", "/server-status", "/phpmyadmin", "/boaform",
+)
+PROBE_PATHS = {"/wp-login.php", "/xmlrpc.php", "/phpinfo.php"}
 
 
 def maintain_rollups(
@@ -24,6 +44,7 @@ def maintain_rollups(
         days.update({today.isoformat(), (today - timedelta(days=1)).isoformat()})
     for day in days:
         recompute_day(conn, day)
+    _refresh_summary_moments(conn, timezone_name)
     cutoff = (today - timedelta(days=retention_days)).isoformat()
     conn.execute("DELETE FROM requests WHERE day < ?", (cutoff,))
     conn.commit()
@@ -223,7 +244,12 @@ def _refresh_feed_readers_for_day(conn: sqlite3.Connection, day: str) -> None:
 
 
 def _upsert_event(conn: sqlite3.Connection, row: sqlite3.Row, kind: str) -> None:
-    subject = row["referrer_host"] if kind == "new_referrer" else row["ua_family"]
+    if kind == "new_referrer":
+        subject = row["referrer_host"]
+    elif kind == "first_ai_visit":
+        subject = row["ua_family"]
+    else:
+        subject = row["path"]
     conn.execute(
         """
         INSERT INTO events(
@@ -291,3 +317,191 @@ def _refresh_events_for_day(conn: sqlite3.Connection, day: str) -> None:
     )
     for row in crawlers:
         _upsert_event(conn, row, "first_ai_visit")
+
+    pages = conn.execute(
+        """
+        SELECT site_id, ts, day, path, NULL referrer_host,
+               NULL ua_family, country
+        FROM (
+            SELECT r.site_id, r.ts, r.day, r.path, r.country,
+                   ROW_NUMBER() OVER (
+                       PARTITION BY r.site_id, r.path ORDER BY r.ts, r.id
+                   ) position
+            FROM requests r
+            WHERE r.day=? AND r.is_bot=0 AND r.is_asset=0
+              AND r.method IN ('GET', 'HEAD') AND r.status BETWEEN 200 AND 399
+              AND NOT EXISTS (
+                  SELECT 1 FROM daily_page_status old
+                  WHERE old.site_id=r.site_id AND old.path=r.path
+                    AND old.day < r.day AND old.status BETWEEN 200 AND 399
+                    AND old.human_nonasset_requests > 0
+              )
+        ) WHERE position=1
+        """,
+        (day,),
+    )
+    for row in pages:
+        if _is_meaningful_page(row["path"]):
+            _upsert_event(conn, row, "new_page")
+
+
+def _is_meaningful_page(path: str) -> bool:
+    lowered = path.lower()
+    return (
+        path != "/"
+        and lowered not in PROBE_PATHS
+        and not any(lowered.startswith(prefix) for prefix in PROBE_PATH_PREFIXES)
+    )
+
+
+def _summary_timestamp(day: str, timezone_name: str) -> int:
+    local_noon = datetime.fromisoformat(f"{day}T12:00:00").replace(
+        tzinfo=ZoneInfo(timezone_name)
+    )
+    return int(local_noon.timestamp())
+
+
+def _insert_summary_event(
+    conn: sqlite3.Connection,
+    *,
+    site_id: int,
+    kind: str,
+    subject: str,
+    day: str,
+    timezone_name: str,
+    value: int,
+    path: Optional[str] = None,
+    source: Optional[str] = None,
+    occurred_at: Optional[int] = None,
+) -> None:
+    conn.execute(
+        """
+        INSERT INTO events(
+            site_id, kind, event_key, occurred_at, day, path, source, value
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            site_id,
+            kind,
+            f"{kind}:{site_id}:{subject}",
+            occurred_at or _summary_timestamp(day, timezone_name),
+            day,
+            path,
+            source,
+            value,
+        ),
+    )
+
+
+def _refresh_summary_moments(
+    conn: sqlite3.Connection, timezone_name: str = "UTC"
+) -> None:
+    """Rebuild deterministic moments derived from permanent daily rollups."""
+    placeholders = ",".join("?" for _ in SUMMARY_EVENT_KINDS)
+    conn.execute(
+        f"DELETE FROM events WHERE kind IN ({placeholders})",
+        SUMMARY_EVENT_KINDS,
+    )
+    by_site: dict[int, list[sqlite3.Row]] = defaultdict(list)
+    for row in conn.execute(
+        """
+        SELECT site_id, day, requests, unique_visitors
+        FROM daily_filter
+        WHERE include_bots=0 AND include_assets=0 AND requests>0
+        ORDER BY site_id, day
+        """
+    ):
+        by_site[row["site_id"]].append(row)
+
+    for site_id, rows in by_site.items():
+        record = rows[0]["requests"]
+        cumulative = 0
+        first_day = datetime.fromisoformat(rows[0]["day"]).date()
+        daily_requests = {row["day"]: row["requests"] for row in rows}
+        for index, row in enumerate(rows):
+            current_day = datetime.fromisoformat(row["day"]).date()
+            is_record = index > 0 and row["requests"] > record
+            if is_record and row["requests"] >= 10:
+                _insert_summary_event(
+                    conn,
+                    site_id=site_id,
+                    kind="traffic_record",
+                    subject=row["day"],
+                    day=row["day"],
+                    timezone_name=timezone_name,
+                    value=row["requests"],
+                )
+            record = max(record, row["requests"])
+
+            previous_total = cumulative
+            cumulative += row["unique_visitors"]
+            crossed = [
+                target for target in VISITOR_MILESTONES
+                if previous_total < target <= cumulative
+            ]
+            if crossed:
+                target = crossed[-1]
+                _insert_summary_event(
+                    conn,
+                    site_id=site_id,
+                    kind="visitor_milestone",
+                    subject=str(target),
+                    day=row["day"],
+                    timezone_name=timezone_name,
+                    value=target,
+                )
+
+            history_days = (current_day - first_day).days
+            window_days = min(28, history_days)
+            if not is_record and window_days >= 14:
+                baseline_total = sum(
+                    daily_requests.get(
+                        (current_day - timedelta(days=offset)).isoformat(), 0
+                    )
+                    for offset in range(1, window_days + 1)
+                )
+                baseline = baseline_total / window_days
+                if baseline >= 1 and row["requests"] >= max(10, baseline * 3):
+                    _insert_summary_event(
+                        conn,
+                        site_id=site_id,
+                        kind="traffic_spike",
+                        subject=row["day"],
+                        day=row["day"],
+                        timezone_name=timezone_name,
+                        value=row["requests"],
+                    )
+
+    feed_groups: dict[tuple[int, str, str], list[sqlite3.Row]] = defaultdict(list)
+    for row in conn.execute(
+        """
+        SELECT site_id, day, path, reader, reported_subscribers, first_seen
+        FROM daily_feed_reader
+        WHERE reported_subscribers IS NOT NULL
+        ORDER BY site_id, reader, path, day
+        """
+    ):
+        feed_groups[(row["site_id"], row["reader"], row["path"])].append(row)
+    for (site_id, reader, path), rows in feed_groups.items():
+        previous_high = 0
+        for row in rows:
+            count = row["reported_subscribers"]
+            crossed = [
+                target for target in SUBSCRIBER_MILESTONES
+                if previous_high < target <= count
+            ]
+            if crossed:
+                target = crossed[-1]
+                _insert_summary_event(
+                    conn,
+                    site_id=site_id,
+                    kind="feed_subscriber_milestone",
+                    subject=f"{reader}:{path}:{target}",
+                    day=row["day"],
+                    timezone_name=timezone_name,
+                    value=target,
+                    path=path,
+                    source=reader,
+                    occurred_at=row["first_seen"],
+                )
+            previous_high = max(previous_high, count)

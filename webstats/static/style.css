@@ -94,6 +94,10 @@ td:first-child { max-width: 480px; overflow-wrap: anywhere; }
 .event-item small, .table-subtitle { color: var(--muted); font-size: 11px; }
 .event-marker { width: 9px; height: 9px; margin-top: 5px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 5px rgba(110, 231, 199, .09); }
 .event-marker.crawler { background: var(--accent-2); box-shadow: 0 0 0 5px rgba(97, 169, 255, .09); }
+.event-marker.page { background: #a78bfa; box-shadow: 0 0 0 5px rgba(167, 139, 250, .09); }
+.event-marker.record, .event-marker.milestone { background: var(--warning); box-shadow: 0 0 0 5px rgba(245, 198, 107, .09); }
+.event-marker.spike { background: var(--danger); box-shadow: 0 0 0 5px rgba(255, 122, 138, .09); }
+.event-marker.feed { background: #fb923c; box-shadow: 0 0 0 5px rgba(251, 146, 60, .09); }
 .table-subtitle { display: block; margin-top: 3px; font-weight: 400; }
 .table-link { color: var(--accent); font-weight: 650; text-decoration: none; }
 .table-link:hover { text-decoration: underline; text-underline-offset: 3px; }

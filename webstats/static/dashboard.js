@@ -191,22 +191,72 @@
     charts[name] = new Chart(canvas, config);
   }
 
-  function renderEvents(events) {
-    const journal = document.querySelector("#event-journal");
+  const momentMarkerPlugin = {
+    id: "momentMarkers",
+    afterDatasetsDraw(chart, _args, options) {
+      const moments = options?.items || [];
+      if (!moments.length) return;
+      const labels = chart.data.labels || [];
+      const days = [...new Set(moments.map(moment => moment.day))];
+      const { ctx, chartArea, scales } = chart;
+      ctx.save();
+      ctx.strokeStyle = "rgba(245, 198, 107, .72)";
+      ctx.fillStyle = "#f5c66b";
+      ctx.lineWidth = 1;
+      ctx.setLineDash([3, 4]);
+      days.forEach(day => {
+        const index = labels.findIndex(label => String(label).startsWith(day));
+        if (index < 0) return;
+        const x = scales.x.getPixelForValue(index);
+        ctx.beginPath();
+        ctx.moveTo(x, chartArea.top + 7);
+        ctx.lineTo(x, chartArea.bottom);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.beginPath();
+        ctx.arc(x, chartArea.top + 5, 3.5, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.setLineDash([3, 4]);
+      });
+      ctx.restore();
+    },
+  };
+
+  function optionsWithMoments(moments) {
+    return {
+      ...chartOptions,
+      plugins: {
+        ...chartOptions.plugins,
+        momentMarkers: { items: moments },
+      },
+    };
+  }
+
+  function eventPresentation(event) {
+    const value = fmt.format(event.value || 0);
+    const presentations = {
+      new_page: ["New content discovered", `${event.path} received its first successful human visit`, "page"],
+      new_referrer: ["New referrer", `${event.source} led someone to ${event.path}`, "referrer"],
+      first_ai_visit: ["First AI crawler sighting", `${event.agent} visited ${event.path}`, "crawler"],
+      traffic_record: ["New traffic record", `${event.site} reached ${value} human page requests`, "record"],
+      traffic_spike: ["Unusual attention", `${event.site} received ${value} requests—well above its recent baseline`, "spike"],
+      visitor_milestone: ["Visitor-day milestone", `${event.site} passed ${value} visitor-days`, "milestone"],
+      feed_subscriber_milestone: ["RSS readership milestone", `${event.source} reported ${value} subscribers to ${event.path}`, "feed"],
+    };
+    return presentations[event.kind] || ["Automatic moment", event.path || event.site, "other"];
+  }
+
+  function renderEvents(events, selector = "#event-journal") {
+    const journal = document.querySelector(selector);
     if (!journal) return;
     if (!events.length) {
-      journal.innerHTML = '<li class="empty">No first sightings in this range yet.</li>';
+      journal.innerHTML = '<li class="empty">No automatic moments in this range yet.</li>';
       return;
     }
-    journal.innerHTML = events.map(event => {
-      const isReferrer = event.kind === "new_referrer";
-      const subject = isReferrer ? event.source : event.agent;
-      const label = isReferrer ? "New referrer" : "First AI crawler sighting";
-      const detail = isReferrer
-        ? `${subject} led someone to ${event.path}`
-        : `${subject} visited ${event.path}`;
+    journal.innerHTML = events.slice(0, 20).map(event => {
+      const [label, detail, category] = eventPresentation(event);
       const country = event.country ? ` · ${event.country}` : "";
-      return `<li class="event-item"><span class="event-marker ${isReferrer ? "referrer" : "crawler"}"></span><div><strong>${escapeHtml(label)}</strong><p>${escapeHtml(detail)}</p><small>${escapeHtml(event.site)} · ${escapeHtml(new Date(event.occurred_at * 1000).toLocaleString())}${escapeHtml(country)}</small></div></li>`;
+      return `<li class="event-item"><span class="event-marker ${escapeHtml(category)}"></span><div><strong>${escapeHtml(label)}</strong><p>${escapeHtml(detail)}</p><small>${escapeHtml(event.site)} · ${escapeHtml(new Date(event.occurred_at * 1000).toLocaleString())}${escapeHtml(country)}</small></div></li>`;
     }).join("");
   }
 
@@ -226,7 +276,7 @@
     try {
       const [data, journal] = await Promise.all([
         api(`/api/overview?${query()}`),
-        api(`/api/events?${query({ limit: 20 })}`),
+        api(`/api/events?${query({ limit: 100 })}`),
       ]);
       document.querySelector("#range-label").textContent = dateLabel(data.from, data.to);
       document.querySelector("#site-cards").innerHTML = data.sites.map(site => {
@@ -243,7 +293,8 @@
       updateChart("overview", document.querySelector("#overview-chart"), {
         type: "line",
         data: { labels: days, datasets: sites.map((site, index) => ({ label: site, data: days.map(day => seriesValues.get(`${day}\0${site}`) || 0), borderColor: colors[index % colors.length], backgroundColor: `${colors[index % colors.length]}22`, tension: .3, pointRadius: 2, fill: false })) },
-        options: chartOptions,
+        options: optionsWithMoments(journal.events),
+        plugins: [momentMarkerPlugin],
       });
       document.querySelector("#server-metrics").innerHTML = [
         metric("Total requests", fmt.format(data.totals.requests)),
@@ -271,13 +322,14 @@
       const interval = range.from === range.to ? "hour" : "day";
       const overviewLink = document.querySelector("#overview-link");
       if (overviewLink) overviewLink.href = `/?${query()}`;
-      const [series, pages, referrers, statuses, agents, countries] = await Promise.all([
+      const [series, pages, referrers, statuses, agents, countries, journal] = await Promise.all([
         api(`/api/site/${encodeURIComponent(site)}/timeseries?${query({ interval })}`),
         api(`/api/site/${encodeURIComponent(site)}/pages?${suffix}&limit=25&offset=${pagesOffset}`),
         api(`/api/site/${encodeURIComponent(site)}/referrers?${suffix}`),
         api(`/api/site/${encodeURIComponent(site)}/status?${suffix}`),
         api(`/api/site/${encodeURIComponent(site)}/agents?${suffix}`),
         api(`/api/site/${encodeURIComponent(site)}/countries?${suffix}`),
+        api(`/api/events?${query({ site, limit: 100 })}`),
       ]);
       const actualInterval = series.interval;
       updateChart("site", document.querySelector("#site-chart"), {
@@ -285,8 +337,11 @@
         data: { labels: series.series.map(row => actualInterval === "hour" ? `${row.bucket.slice(11, 16)} ${row.bucket.slice(-5)}` : row.bucket), datasets: [
           { label: "Requests", data: series.series.map(row => row.requests), borderColor: colors[0], backgroundColor: `${colors[0]}22`, tension: .3, fill: true },
           { label: actualInterval === "hour" ? "Hourly visitors" : "Daily visitors", data: series.series.map(row => row.unique_visitors), borderColor: colors[1], backgroundColor: "transparent", tension: .3 },
-        ] }, options: chartOptions,
+        ] },
+        options: optionsWithMoments(actualInterval === "day" ? journal.events : []),
+        plugins: [momentMarkerPlugin],
       });
+      renderEvents(journal.events, "#site-event-journal");
       const heading = document.querySelector("#traffic-heading");
       if (heading) heading.textContent = actualInterval === "hour" ? "Requests and hourly visitors" : "Requests and daily visitors";
       fillTable("#pages-table", pages.pages, [

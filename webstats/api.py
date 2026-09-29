@@ -192,21 +192,33 @@ def sites():
 def events():
     start, end = _date_range()
     limit = _int_arg("limit", 20, 1, 100)
+    requested_site = request.args.get("site", "").strip()
     with _conn() as conn:
+        site = _site(conn, requested_site) if requested_site else None
+        site_clause = "AND e.site_id=?" if site else ""
+        parameters: tuple[Any, ...] = (start, end)
+        if site:
+            parameters += (site["id"],)
+        parameters += (limit,)
         rows = [
             dict(row)
             for row in conn.execute(
-                """
+                f"""
                 SELECT e.kind, e.occurred_at, e.day, e.path, e.source,
                        e.agent, e.country, e.value, s.name site
                 FROM events e JOIN sites s ON s.id=e.site_id
-                WHERE e.day BETWEEN ? AND ?
+                WHERE e.day BETWEEN ? AND ? {site_clause}
                 ORDER BY e.occurred_at DESC, e.id DESC LIMIT ?
                 """,
-                (start, end, limit),
+                parameters,
             )
         ]
-    return jsonify({"from": start, "to": end, "events": rows})
+    return jsonify({
+        "from": start,
+        "to": end,
+        "site": requested_site or None,
+        "events": rows,
+    })
 
 
 @api_bp.get("/ai-crawlers")

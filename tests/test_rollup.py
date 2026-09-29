@@ -5,7 +5,11 @@ import unittest
 
 from webstats.config import Config, GeoIPConfig, ServerConfig, SiteConfig, StorageConfig
 from webstats.db import connect, initialize, insert_requests, site_id_map
-from webstats.rollup import maintain_rollups, recompute_day
+from webstats.rollup import (
+    _refresh_summary_moments,
+    maintain_rollups,
+    recompute_day,
+)
 
 
 class RollupTests(unittest.TestCase):
@@ -84,7 +88,7 @@ class RollupTests(unittest.TestCase):
         recompute_day(self.conn, "2026-09-27")
 
         self.assertEqual(
-            self.conn.execute("SELECT COUNT(*) FROM events").fetchone()[0], 2
+            self.conn.execute("SELECT COUNT(*) FROM events").fetchone()[0], 4
         )
         first_referrer = self.conn.execute(
             "SELECT day, path, country FROM events WHERE kind='new_referrer'"
@@ -125,6 +129,121 @@ class RollupTests(unittest.TestCase):
                 ).fetchone()
             ),
             ("/essay", 200, 2, 1),
+        )
+
+        pages = {
+            (row["day"], row["path"])
+            for row in self.conn.execute(
+                "SELECT day, path FROM events WHERE kind='new_page'"
+            )
+        }
+        self.assertEqual(
+            pages,
+            {("2026-09-27", "/older-essay"), ("2026-09-28", "/essay")},
+        )
+
+    def test_new_page_moments_ignore_probes_and_keep_first_sighting(self):
+        site_id = site_id_map(self.conn)["example.com"]
+        rows = [
+            (
+                "source-page", "fingerprint-page", site_id, 1790600000,
+                "2026-09-28", "visitor", "GET", "/new-essay", None, 200,
+                10, None, None, "Mozilla/5.0", "Other browser", "Other",
+                0, 0, "US",
+            ),
+            (
+                "source-probe", "fingerprint-probe", site_id, 1790600001,
+                "2026-09-28", "visitor-2", "GET", "/wp-login.php", None,
+                200, 10, None, None, "Mozilla/5.0", "Other browser", "Other",
+                0, 0, "US",
+            ),
+            (
+                "source-failed", "fingerprint-failed", site_id, 1790600002,
+                "2026-09-28", "visitor-3", "GET", "/missing", None, 404,
+                10, None, None, "Mozilla/5.0", "Other browser", "Other",
+                0, 0, "US",
+            ),
+        ]
+        insert_requests(self.conn, rows)
+        recompute_day(self.conn, "2026-09-28")
+        later = (
+            "source-page-later", "fingerprint-page-later", site_id, 1790686400,
+            "2026-09-29", "visitor-4", "GET", "/new-essay", None, 200,
+            10, None, None, "Mozilla/5.0", "Other browser", "Other",
+            0, 0, "CA",
+        )
+        insert_requests(self.conn, [later])
+        recompute_day(self.conn, "2026-09-29")
+
+        pages = [
+            tuple(row)
+            for row in self.conn.execute(
+                "SELECT day, path, country FROM events WHERE kind='new_page'"
+            )
+        ]
+        self.assertEqual(pages, [("2026-09-28", "/new-essay", "US")])
+
+    def test_summary_moments_are_meaningful_and_idempotent(self):
+        site_id = site_id_map(self.conn)["example.com"]
+        start = date(2026, 9, 1)
+        rows = []
+        for offset in range(17):
+            day = (start + timedelta(days=offset)).isoformat()
+            requests = 50 if offset == 0 else 2
+            visitors = 90 if offset == 0 else 15 if offset == 1 else 1
+            if offset == 15:
+                requests = 20
+            if offset == 16:
+                requests = 60
+            rows.append(
+                (
+                    site_id, day, 0, 0, requests, visitors, requests * 10,
+                    requests, 0, 0, 0,
+                )
+            )
+        self.conn.executemany(
+            """
+            INSERT INTO daily_filter(
+                site_id, day, include_bots, include_assets, requests,
+                unique_visitors, bytes, status_2xx, status_3xx,
+                status_4xx, status_5xx
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            rows,
+        )
+        self.conn.executemany(
+            """
+            INSERT INTO daily_feed_reader(
+                site_id, day, path, reader, requests, reported_subscribers,
+                first_seen, last_seen
+            ) VALUES (?, ?, '/feed.xml', 'Inoreader', 1, ?, ?, ?)
+            """,
+            (
+                (site_id, "2026-09-01", 42, 1790600000, 1790600000),
+                (site_id, "2026-09-02", 55, 1790686400, 1790686400),
+            ),
+        )
+        _refresh_summary_moments(self.conn, "UTC")
+        _refresh_summary_moments(self.conn, "UTC")
+
+        moments = [
+            tuple(row)
+            for row in self.conn.execute(
+                """
+                SELECT kind, day, value, source
+                FROM events ORDER BY day, kind
+                """
+            )
+        ]
+        self.assertEqual(
+            moments,
+            [
+                ("feed_subscriber_milestone", "2026-09-01", 25, "Inoreader"),
+                ("feed_subscriber_milestone", "2026-09-02", 50, "Inoreader"),
+                ("visitor_milestone", "2026-09-02", 100, None),
+                ("traffic_spike", "2026-09-16", 20, None),
+                ("traffic_record", "2026-09-17", 60, None),
+            ],
         )
 
     def test_feed_reader_rollup_keeps_reported_counts_and_observations(self):

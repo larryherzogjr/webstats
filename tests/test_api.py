@@ -314,6 +314,8 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(
             {(event["kind"], event["path"]) for event in events},
             {
+                ("new_page", "/one"),
+                ("new_page", "/linked-essay"),
                 ("new_referrer", "/linked-essay"),
                 ("first_ai_visit", "/linked-essay"),
             },
@@ -322,6 +324,15 @@ class ApiTests(unittest.TestCase):
             event for event in events if event["kind"] == "new_referrer"
         )
         self.assertEqual(referrer["source"], "news.ycombinator.com")
+        scoped = self.client.get(
+            "/api/events?from=2026-09-28&to=2026-09-28&site=example.com"
+        ).get_json()
+        self.assertEqual(scoped["site"], "example.com")
+        self.assertEqual(len(scoped["events"]), len(events))
+        self.assertEqual(
+            self.client.get("/api/events?site=unknown.example").status_code,
+            404,
+        )
 
         body = self.client.get(
             "/api/ai-crawlers?from=2026-09-28&to=2026-09-28"

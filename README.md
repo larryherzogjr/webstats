@@ -18,8 +18,10 @@ log paths, retention, timezone, and log format all live in TOML configuration.
 - Daily rotating IP hashes for daily visitor counts without cross-day tracking.
 - Bot, browser, operating-system, static-asset, referrer, status, and optional
   country classification.
-- A durable event journal for first-time referrers and AI crawler
-  sightings, plus a page-level AI crawler field guide.
+- Automatic Moments for newly discovered content, first-time referrers, AI
+  crawler sightings, traffic records and spikes, visitor-day milestones, and
+  explicitly reported RSS subscriber milestones. Gold chart markers connect
+  each observation to the traffic around it.
 - An RSS readership view that recognizes hosted and self-hosted feed clients,
   charts explicitly reported subscription totals, and keeps unreported readers
   visible without inventing subscriber counts from fetch frequency.
@@ -38,11 +40,12 @@ log paths, retention, timezone, and log format all live in TOML configuration.
 - systemd, nginx, health-check, password, and backfill assets.
 - Versioned SQLite migrations and GitHub Actions checks for Python 3.11 and 3.12.
 
-The event journal, AI field guide, and RSS readership view use permanent daily
-aggregates. They add no persistent visitor identifier and do not extend raw
-request or IP-hash retention. Schema upgrades rebuild the new dimensions for
-raw days still inside the configured retention window; future observations then
-accumulate normally.
+Automatic Moments, the AI field guide, and the RSS readership view use
+permanent daily aggregates. They add no persistent visitor identifier and do
+not extend raw request or IP-hash retention. New-page moments require a
+successful human, non-asset request, ignore common probe paths, and preserve
+only the first sighting. Aggregate moments are rebuilt deterministically, so
+ingest and backfill reruns cannot duplicate them.
 
 RSS subscriber totals are deliberately conservative. Inoreader and some other
 services include an explicit subscriber count in their fetcher user agent;
@@ -221,7 +224,7 @@ All routes require the admin session except `/api/health`:
 - `GET /api/site/<name>/timeseries?from=&to=&interval=day|hour`
 - `GET /api/site/<name>/pages`, `/referrers`, `/status`, `/agents`, `/countries`
 - `GET /api/site/<name>/page?path=/requested/path`
-- `GET /api/events`, `/ai-crawlers`
+- `GET /api/events?from=&to=&site=&limit=`, `/ai-crawlers`
 - `GET /api/feed-readers`
 - `GET /api/almanac?year=&site=&bots=0&assets=0`
 - `GET /api/live?minutes=60`
