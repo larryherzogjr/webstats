@@ -162,6 +162,13 @@ def _edit_distance(left: str, right: str) -> int:
     return previous[-1]
 
 
+def _path_grams(path: str) -> set[str]:
+    normalized = path.lower().rstrip("/") or "/"
+    if len(normalized) < 3:
+        return {normalized}
+    return {normalized[index:index + 3] for index in range(len(normalized) - 2)}
+
+
 def _typo_candidate(
     path: str, successful_paths: Iterable[tuple[str, int]]
 ) -> Optional[dict[str, Any]]:
@@ -173,9 +180,16 @@ def _typo_candidate(
         normalized = candidate.lower().rstrip("/") or "/"
         if normalized in {missing, "/"} or len(normalized) > 160:
             continue
-        distance = _edit_distance(missing, normalized)
+        longest = max(len(missing), len(normalized))
+        if longest < 5:
+            continue
+        allowed = 1 if longest < 8 else 2
+        if abs(len(missing) - len(normalized)) > allowed:
+            continue
         similarity = SequenceMatcher(None, missing, normalized).ratio()
-        allowed = 1 if max(len(missing), len(normalized)) < 8 else 2
+        if similarity < 0.72:
+            continue
+        distance = _edit_distance(missing, normalized)
         if not (distance <= allowed or similarity >= 0.88):
             continue
         score = similarity + min(successes, 1000) / 100_000 - distance / 100
@@ -1150,7 +1164,10 @@ def error_intelligence():
         if site:
             success_parameters = (site["id"],)
         successes: dict[tuple[int, str], dict[str, Any]] = {}
-        successful_paths: dict[int, list[tuple[str, int]]] = defaultdict(list)
+        successful_paths: dict[
+            int, dict[str, list[tuple[str, int]]]
+        ] = defaultdict(lambda: defaultdict(list))
+        successful_path_counts: dict[int, int] = defaultdict(int)
         for row in conn.execute(
             f"""
             SELECT p.site_id, p.path, MAX(p.day) last_success,
@@ -1164,10 +1181,12 @@ def error_intelligence():
             success_parameters,
         ):
             successes[(row["site_id"], row["path"])] = dict(row)
-            if len(successful_paths[row["site_id"]]) < 2000:
-                successful_paths[row["site_id"]].append(
-                    (row["path"], row["requests"])
-                )
+            if successful_path_counts[row["site_id"]] < 2000:
+                for gram in _path_grams(row["path"]):
+                    successful_paths[row["site_id"]][gram].append(
+                        (row["path"], row["requests"])
+                    )
+                successful_path_counts[row["site_id"]] += 1
 
         raw_parameters: tuple[Any, ...] = (
             start.isoformat(), today.isoformat()
@@ -1228,8 +1247,25 @@ def error_intelligence():
         regression = bool(
             success and success["last_success"] < row["last_seen"]
         )
+        path_length = len(row["path"].lower().rstrip("/") or "/")
+        candidate_matches: dict[str, list[int]] = {}
+        for gram in _path_grams(row["path"]):
+            for candidate, requests in successful_paths[row["site_id"]].get(
+                gram, ()
+            ):
+                if abs(len(candidate.lower().rstrip("/") or "/") - path_length) > 2:
+                    continue
+                match = candidate_matches.setdefault(candidate, [requests, 0])
+                match[1] += 1
+        plausible_paths = (
+            (candidate, values[0])
+            for candidate, values in sorted(
+                candidate_matches.items(),
+                key=lambda item: (-item[1][1], -item[1][0], item[0]),
+            )[:100]
+        )
         suggestion = None if success else _typo_candidate(
-            row["path"], successful_paths[row["site_id"]]
+            row["path"], plausible_paths
         )
         if regression:
             category = "regression"
