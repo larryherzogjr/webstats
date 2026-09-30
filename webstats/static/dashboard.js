@@ -23,6 +23,8 @@
   let errorsDays = [7, 30, 90].includes(Number(new URLSearchParams(window.location.search).get("days")))
     ? Number(new URLSearchParams(window.location.search).get("days")) : 30;
   let investigationRequestId = 0;
+  let caseInterval = initialState.caseInterval;
+  let caseBucket = initialState.caseBucket;
 
   function setupNavigation() {
     const toggle = document.querySelector(".nav-toggle");
@@ -106,6 +108,8 @@
       category: params.get("category") || "",
       kind: params.get("kind") || "",
       q: params.get("q") || "",
+      caseInterval: ["day", "hour"].includes(params.get("case_interval")) ? params.get("case_interval") : "",
+      caseBucket: (params.get("case_bucket") || "").slice(0, 32),
     };
   }
 
@@ -130,6 +134,9 @@
 
   function persistentParams() {
     if (page === "page") return { path: document.body.dataset.path };
+    if (page === "site" && caseInterval && caseBucket) return {
+      case_interval: caseInterval, case_bucket: caseBucket,
+    };
     if (page === "link-atlas" && linkSource) return { source: linkSource };
     if (page === "inbox" && inboxCategory) return { category: inboxCategory };
     if (page === "chronicle") return {
@@ -217,6 +224,10 @@
     function renderState(state) {
       range = state.range;
       scopeSite = state.site;
+      if (page === "site") {
+        caseInterval = state.caseInterval;
+        caseBucket = state.caseBucket;
+      }
       if (page === "link-atlas") linkSource = state.source;
       if (page === "inbox") inboxCategory = state.category;
       if (page === "chronicle") {
@@ -488,6 +499,13 @@
     return `/site/${encodeURIComponent(item.site)}/page?${params}`;
   }
 
+  function investigationHref(site, day, bots = "0", assets = "0") {
+    return `/site/${encodeURIComponent(site)}?${new URLSearchParams({
+      from: day, to: day, bots, assets,
+      case_interval: "day", case_bucket: day,
+    })}`;
+  }
+
   function renderPulsePreview(data) {
     const target = document.querySelector("#pulse-preview");
     if (!target) return;
@@ -722,8 +740,23 @@
       : `${fmt.format(data.summary.requests)} requests · No retained comparison periods`;
     const pageHref = path => `/site/${encodeURIComponent(data.site)}/page?${new URLSearchParams({ from: data.from, to: data.to, ...filters(), path })}`;
     const hourlyHref = `/site/${encodeURIComponent(data.site)}?${new URLSearchParams({ from: data.from, to: data.to, ...filters() })}`;
+    const quality = data.comparison.quality === "strong"
+      ? `${data.comparison.samples} matching weeks recorded`
+      : data.comparison.samples
+        ? `Limited comparison: ${data.comparison.samples} of ${data.comparison.expected} matching weeks available${data.comparison.missing_days.length ? `; no recorded coverage for ${data.comparison.missing_days.join(", ")}` : ""}${data.comparison.uncertain_days.length ? `; no site requests on ${data.comparison.uncertain_days.join(", ")}` : ""}${data.in_progress ? "; this period is still in progress" : ""}.`
+        : "No matching weeks with retained log evidence are available yet.";
+    const contributorRows = (rows, kind) => rows.length
+      ? rows.map(item => {
+        const label = kind === "pages"
+          ? `<a href="${escapeHtml(pageHref(item.label))}">${escapeHtml(item.label)}</a>`
+          : `<span>${escapeHtml(item.label)}</span>`;
+        const change = item.change === null ? "No baseline" : `${item.change > 0 ? "+" : ""}${fmt.format(item.change)} vs usual`;
+        return `<li>${label}<span class="investigation-delta ${item.change > 0 ? "change-up" : item.change < 0 ? "change-down" : ""}"><strong>${fmt.format(item.requests)}</strong><small>${escapeHtml(change)}</small></span></li>`;
+      }).join("")
+      : "<li>No matching requests</li>";
     content.innerHTML = `
       <p class="investigation-comparison">${escapeHtml(comparison)}${data.interval === "day" ? ` <a href="${escapeHtml(hourlyHref)}">View hourly chart</a>` : ""}</p>
+      <p class="investigation-quality ${escapeHtml(data.comparison.quality)}">${escapeHtml(quality)}</p>
       <div class="investigation-metrics">
         ${metric("Approx. visitors", fmt.format(data.summary.visitors))}
         ${metric("Bot requests", fmt.format(data.summary.bot_requests))}
@@ -733,15 +766,9 @@
         <div><h3>What the logs show</h3><ul class="investigation-observations">${data.observations.length
           ? data.observations.map(item => `<li>${escapeHtml(item)}</li>`).join("")
           : "<li>No requests matched the current filters.</li>"}</ul></div>
-        <div><h3>Top pages</h3><ul class="investigation-list">${data.pages.length
-          ? data.pages.map(item => `<li><a href="${escapeHtml(pageHref(item.path))}">${escapeHtml(item.path)}</a><strong>${fmt.format(item.requests)}</strong></li>`).join("")
-          : "<li>No matching pages</li>"}</ul></div>
-        <div><h3>External referrers</h3><ul class="investigation-list">${data.referrers.length
-          ? data.referrers.map(item => `<li><span>${escapeHtml(item.host)}</span><strong>${fmt.format(item.requests)}</strong></li>`).join("")
-          : "<li>No external referrers recorded</li>"}</ul></div>
-        <div><h3>Bot families</h3><ul class="investigation-list">${data.agents.length
-          ? data.agents.map(item => `<li><span>${escapeHtml(item.agent)}</span><strong>${fmt.format(item.requests)}</strong></li>`).join("")
-          : "<li>No bot requests in this view</li>"}</ul></div>
+        <div><h3>Page changes</h3><ul class="investigation-list">${contributorRows(data.contributors.pages, "pages")}</ul></div>
+        <div><h3>Referrer changes</h3><ul class="investigation-list">${contributorRows(data.contributors.referrers, "referrers")}</ul></div>
+        <div><h3>Bot family changes</h3><ul class="investigation-list">${contributorRows(data.contributors.agents, "agents")}</ul></div>
       </div>
       <h3>Within the period</h3>
       <div class="investigation-timeline" aria-label="Request counts through the selected period">${data.timeline.map(item => {
@@ -753,11 +780,16 @@
     applyDynamicStyles(content);
   }
 
-  async function showInvestigation(site, bucket, interval) {
+  async function showInvestigation(site, bucket, interval, push = true) {
     const panel = document.querySelector("#investigation-panel");
     const content = document.querySelector("#investigation-content");
     const heading = document.querySelector("#investigation-heading");
     if (!panel || !content || !heading) return;
+    caseBucket = bucket;
+    caseInterval = interval;
+    syncUrl(push);
+    const copyStatus = document.querySelector("#investigation-copy-status");
+    if (copyStatus) copyStatus.textContent = "";
     const requestId = ++investigationRequestId;
     panel.classList.remove("hidden");
     heading.textContent = "Opening case file…";
@@ -783,7 +815,7 @@
       const suffix = query();
       const interval = range.from === range.to ? "hour" : "day";
       const overviewLink = document.querySelector("#overview-link");
-      if (overviewLink) overviewLink.href = `/?${query()}`;
+      if (overviewLink) overviewLink.href = `/?${siteQuery()}`;
       const [series, pages, referrers, statuses, agents, countries, journal] = await Promise.all([
         api(`/api/site/${encodeURIComponent(site)}/timeseries?${query({ interval })}`),
         api(`/api/site/${encodeURIComponent(site)}/pages?${suffix}&limit=25&offset=${pagesOffset}`),
@@ -794,10 +826,11 @@
         api(`/api/events?${query({ site, limit: 100 })}`),
       ]);
       const actualInterval = series.interval;
+      const leadBuckets = new Set(series.leads.map(item => item.bucket));
       updateChart("site", document.querySelector("#site-chart"), {
         type: "line",
         data: { labels: series.series.map(row => actualInterval === "hour" ? `${row.bucket.slice(11, 16)} ${row.bucket.slice(-5)}` : row.bucket), datasets: [
-          { label: "Requests", data: series.series.map(row => row.requests), borderColor: colors[0], backgroundColor: `${colors[0]}22`, tension: .3, fill: true },
+          { label: "Requests", data: series.series.map(row => row.requests), borderColor: colors[0], backgroundColor: `${colors[0]}22`, pointRadius: series.series.map(row => leadBuckets.has(row.bucket) ? 6 : 2), pointBackgroundColor: series.series.map(row => leadBuckets.has(row.bucket) ? "#f5c66b" : colors[0]), pointHoverRadius: 8, tension: .3, fill: true },
           { label: actualInterval === "hour" ? "Hourly visitors" : "Daily visitors", data: series.series.map(row => row.unique_visitors), borderColor: colors[1], backgroundColor: "transparent", tension: .3 },
         ] },
         options: {
@@ -808,6 +841,11 @@
         },
         plugins: [momentMarkerPlugin],
       });
+      const leads = document.querySelector("#traffic-leads");
+      leads.classList.toggle("hidden", !series.leads.length);
+      leads.innerHTML = series.leads.length
+        ? `<strong>Worth investigating</strong><div>${series.leads.map(item => `<button type="button" data-bucket="${escapeHtml(item.bucket)}" data-interval="${escapeHtml(actualInterval)}">${escapeHtml(actualInterval === "hour" ? item.bucket.slice(11, 16) : item.bucket)} · ${fmt.format(item.requests)} requests vs ${fmt.format(item.baseline)} usual</button>`).join("")}</div>`
+        : "";
       renderEvents(journal.events, "#site-event-journal");
       const heading = document.querySelector("#traffic-heading");
       if (heading) heading.textContent = actualInterval === "hour" ? "Requests and hourly visitors" : "Requests and daily visitors";
@@ -836,6 +874,16 @@
         data: { labels: statuses.statuses.map(row => String(row.status)), datasets: [{ data: statuses.statuses.map(row => row.requests), backgroundColor: statuses.statuses.map((row, index) => colors[index % colors.length]), borderColor: "#142135", borderWidth: 3 }] },
         options: { responsive: true, maintainAspectRatio: false, cutout: "68%", plugins: chartOptions.plugins },
       });
+      if (caseInterval && caseBucket) {
+        const caseDay = caseBucket.slice(0, 10);
+        if (caseDay >= range.from && caseDay <= range.to) {
+          showInvestigation(site, caseBucket, caseInterval, false);
+        } else {
+          caseInterval = "";
+          caseBucket = "";
+          syncUrl(false);
+        }
+      }
     } catch (error) { showError(error); }
   }
 
@@ -1076,7 +1124,8 @@
         const unreadClass = event.occurred_at > previousSeenAt ? " unread" : "";
         const href = inboxHref(event, data.from, data.to);
         const country = event.country ? ` · ${countryFlag(event.country)} ${event.country}` : "";
-        return `<li class="inbox-event${unreadClass}"><span class="event-marker ${escapeHtml(presentation)}"></span><div class="inbox-event-copy"><div class="inbox-event-top"><span class="inbox-category ${escapeHtml(event.category)}">${escapeHtml(event.category)}</span><time datetime="${escapeHtml(new Date(event.occurred_at * 1000).toISOString())}">${escapeHtml(new Date(event.occurred_at * 1000).toLocaleString())}</time></div><a href="${escapeHtml(href)}">${escapeHtml(label)}</a><p>${escapeHtml(detail)}</p><small>${escapeHtml(event.site)}${escapeHtml(country)}</small></div></li>`;
+        const caseHref = investigationHref(event.site, event.day, event.kind === "first_ai_visit" ? "1" : "0");
+        return `<li class="inbox-event${unreadClass}"><span class="event-marker ${escapeHtml(presentation)}"></span><div class="inbox-event-copy"><div class="inbox-event-top"><span class="inbox-category ${escapeHtml(event.category)}">${escapeHtml(event.category)}</span><time datetime="${escapeHtml(new Date(event.occurred_at * 1000).toISOString())}">${escapeHtml(new Date(event.occurred_at * 1000).toLocaleString())}</time></div><a href="${escapeHtml(href)}">${escapeHtml(label)}</a><p>${escapeHtml(detail)}</p><small>${escapeHtml(event.site)}${escapeHtml(country)}</small><a class="investigation-entry-link" href="${escapeHtml(caseHref)}">Investigate this day</a></div></li>`;
       }).join("") : '<li class="empty">Nothing landed in this category and date range.</li>';
       if (data.to === serverToday && !inboxCategory && !scopeSite) {
         writeInboxSeenAt(data.generated_at);
@@ -1686,6 +1735,7 @@
         <div><div class="episode-badges"><span class="episode-badge kind">${escapeHtml(episodeLabel(episode.kind))}</span><span class="episode-badge trajectory">${escapeHtml(episodeLabel(episode.trajectory))}</span><span class="episode-badge effect ${escapeHtml(episode.lasting_effect)}">${escapeHtml(episodeLabel(episode.lasting_effect))}</span></div><h3>${escapeHtml(episode.site)}</h3><p>${escapeHtml(dateLabel(episode.start, episode.end))} · ${fmt.format(episode.duration_days)} day${episode.duration_days === 1 ? "" : "s"}</p></div>
         <div class="episode-peak"><strong>${fmt.format(episode.peak_requests)}</strong><span>peak requests</span><small>${escapeHtml(multiple)}</small></div>
       </header>
+      <a class="investigation-entry-link" href="${escapeHtml(investigationHref(episode.site, episode.peak_day))}">Investigate the peak day</a>
       <div class="episode-stat-strip"><span><strong>${fmt.format(episode.requests)}</strong> during episode</span><span><strong>+${fmt.format(episode.excess_requests)}</strong> above baseline</span><span><strong>${fmt.format(episode.baseline_average)}</strong> prior daily avg</span><span><strong>${escapeHtml(aftermath)}</strong></span></div>
       <div class="episode-trajectory">${episodeTimeline(episode)}</div>
       <div class="episode-copy">${episode.narrative.map((line, index) => `<p${index === 0 ? ' class="lead"' : ""}>${escapeHtml(line)}</p>`).join("")}</div>
@@ -2004,8 +2054,24 @@
   if (page === "overview") { setupFilters(loadOverview); loadOverview(); }
   if (page === "site") {
     setupFilters(loadSite);
+    document.querySelector("#traffic-leads")?.addEventListener("click", event => {
+      const button = event.target.closest("button[data-bucket]");
+      if (button) showInvestigation(document.body.dataset.site, button.dataset.bucket, button.dataset.interval);
+    });
+    document.querySelector("#investigation-copy")?.addEventListener("click", async () => {
+      const status = document.querySelector("#investigation-copy-status");
+      try {
+        await navigator.clipboard.writeText(window.location.href);
+        status.textContent = "Case link copied. Anyone opening it must sign in.";
+      } catch (_error) {
+        status.textContent = "Copy the case URL from your address bar.";
+      }
+    });
     document.querySelector("#investigation-close")?.addEventListener("click", () => {
       investigationRequestId += 1;
+      caseInterval = "";
+      caseBucket = "";
+      syncUrl();
       document.querySelector("#investigation-panel")?.classList.add("hidden");
     });
     document.querySelector("#pages-prev")?.addEventListener("click", () => { pagesOffset = Math.max(0, pagesOffset - 25); loadSite(); });

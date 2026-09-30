@@ -18,6 +18,7 @@ from flask import Blueprint, current_app, jsonify, request
 from .auth import login_required
 from .bots import AI_AGENTS
 from .db import connect
+from .detective import chart_leads, comparable_periods, contributor_changes, _request_count
 from .episodes import detect_episodes
 from .privacy import INDIVIDUAL_ACTIVITY_PRIVATE_SITES
 from .reliability import detect_error_bursts
@@ -3476,7 +3477,15 @@ def timeseries(name: str):
             ]
         else:
             raise ApiError("interval must be day or hour")
-    return jsonify({"site": name, "interval": interval, "series": rows})
+        config = current_app.config["WEBSTATS_CONFIG"]
+        zone = ZoneInfo(config.server.timezone)
+        now = datetime.now(zone)
+        leads = chart_leads(
+            conn, site["id"], rows, interval, zone,
+            now.date() - timedelta(days=config.storage.raw_retention_days), now,
+            bots, assets,
+        )
+    return jsonify({"site": name, "interval": interval, "series": rows, "leads": leads})
 
 
 @api_bp.get("/site/<path:name>/investigation")
@@ -3554,35 +3563,43 @@ def investigation(name: str):
             {"start": start_ts + index * step, "requests": counts.get(index, 0)}
             for index in range((end_ts - start_ts + step - 1) // step)
         ]
-        comparison_values = []
-        for offset in range(1, 8):
-            prior_day = day - timedelta(days=offset)
-            if prior_day < cutoff:
-                continue
-            if interval == "day":
-                prior_start = datetime.combine(prior_day, datetime.min.time(), tzinfo=zone)
-                prior_end = datetime.combine(prior_day + timedelta(days=1), datetime.min.time(), tzinfo=zone)
-            else:
-                prior_start = datetime.combine(prior_day, datetime.min.time(), tzinfo=zone).replace(
-                    hour=start.astimezone(zone).hour
-                )
-                prior_end = datetime.fromtimestamp(prior_start.timestamp() + 3600, zone)
-            comparison_values.append(conn.execute(
-                f"SELECT COUNT(*) FROM requests WHERE {where}",
-                (site["id"], int(prior_start.timestamp()), int(prior_end.timestamp()), bots, assets),
-            ).fetchone()[0])
+        periods, missing = comparable_periods(
+            conn, site["id"], day, interval, start.astimezone(zone).hour,
+            zone, cutoff,
+        )
+        comparison_values = [
+            _request_count(conn, site["id"], item["start"], item["end"], bots, assets)
+            for item in periods
+        ]
+        contributors = contributor_changes(
+            conn, site["id"], start_ts, end_ts, periods, bots, assets,
+        )
 
     average = round(sum(comparison_values) / len(comparison_values), 1) if comparison_values else None
     ratio = round(summary["requests"] / average, 1) if average else None
+    uncertain_days = [item["day"] for item in periods if not item["site_activity"]]
+    quality = (
+        "insufficient" if not periods else
+        "limited" if len(periods) < 3 or missing or uncertain_days or in_progress else
+        "strong"
+    )
     observations = []
     if average is not None:
         ratio_text = f" ({ratio:g}×)" if ratio is not None else ""
         observations.append(
             f"{summary['requests']} requests{' so far' if in_progress else ''} versus "
             f"{average:g} recorded on average across "
-            f"{len(comparison_values)} prior comparable {interval}{'s' if len(comparison_values) != 1 else ''}"
+            f"{len(comparison_values)} prior matching weekday{'' if len(comparison_values) == 1 else 's'}"
+            f"{' and hour' if interval == 'hour' else ''}"
             f"{ratio_text}."
         )
+    if contributors["pages"] and periods:
+        top_change = max(contributors["pages"], key=lambda item: item["change"])
+        if top_change["change"] > 0:
+            observations.append(
+                f"A notable page increase was {top_change['label']}: "
+                f"{top_change['change']:g} more requests than its matching-period average."
+            )
     if pages and summary["requests"]:
         top = pages[0]
         observations.append(
@@ -3603,10 +3620,15 @@ def investigation(name: str):
         "site": name, "interval": interval, "bucket": bucket, "in_progress": in_progress,
         "from": day.isoformat(), "to": day.isoformat(),
         "summary": summary,
-        "comparison": {"average": average, "ratio": ratio, "samples": len(comparison_values)},
+        "comparison": {
+            "average": average, "ratio": ratio, "samples": len(comparison_values),
+            "expected": 4, "quality": quality, "missing_days": missing,
+            "uncertain_days": uncertain_days,
+        },
         "pages": pages, "referrers": referrers, "agents": agents,
+        "contributors": contributors,
         "timeline": timeline, "observations": observations,
-        "note": "Comparisons use retained raw logs; missing logs can appear as zero traffic. Log patterns do not establish cause.",
+        "note": "Matching periods use the same weekday over four weeks, and the same clock hour for hourly cases. Missing or quiet log days limit confidence. Log patterns do not establish cause.",
     })
 
 

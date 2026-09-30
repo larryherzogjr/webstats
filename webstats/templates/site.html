@@ -13,12 +13,17 @@
   <div class="panel-heading"><div><p class="eyebrow">Trend</p><h2 id="traffic-heading">Requests and daily visitors</h2></div></div>
   <div class="chart-wrap"><canvas id="site-chart"></canvas></div>
   <p class="chart-hint">Click a point on the chart to investigate that day or hour.</p>
+  <div id="traffic-leads" class="traffic-leads hidden" aria-live="polite"></div>
 </section>
 <section id="investigation-panel" class="panel investigation-panel hidden" aria-live="polite">
   <div class="panel-heading">
     <div><p class="eyebrow">Traffic Detective</p><h2 id="investigation-heading">Case file</h2></div>
-    <button id="investigation-close" class="investigation-close" type="button" aria-label="Close case file">Close</button>
+    <div class="investigation-actions">
+      <button id="investigation-copy" class="investigation-close" type="button">Copy link</button>
+      <button id="investigation-close" class="investigation-close" type="button" aria-label="Close case file">Close</button>
+    </div>
   </div>
+  <p id="investigation-copy-status" class="investigation-copy-status" role="status"></p>
   <div id="investigation-content"></div>
 </section>
 <section class="panel">

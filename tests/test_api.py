@@ -403,8 +403,8 @@ class ApiTests(unittest.TestCase):
             site_id = site_id_map(conn)["example.com"]
             other_id = conn.execute("INSERT INTO sites(name) VALUES ('other.example')").lastrowid
             rows = []
-            for offset in range(8):
-                day = (datetime(2026, 9, 28, tzinfo=zone) - timedelta(days=offset)).date()
+            for offset in range(5):
+                day = (datetime(2026, 9, 28, tzinfo=zone) - timedelta(weeks=offset)).date()
                 count = 8 if offset == 0 else 2
                 for index in range(count):
                     ts = int(datetime(day.year, day.month, day.day, 10, 20, tzinfo=zone).timestamp())
@@ -421,6 +421,9 @@ class ApiTests(unittest.TestCase):
                 42, None, None, "Mozilla/5.0", "Other browser", "Other", 0, 0, None,
             ))
             insert_requests(conn, rows)
+            for offset in range(5):
+                day = (datetime(2026, 9, 28, tzinfo=zone) - timedelta(weeks=offset)).date()
+                recompute_day(conn, day.isoformat())
             conn.commit()
         self.authenticate()
         now = datetime(2026, 9, 29, 12, tzinfo=zone)
@@ -434,13 +437,34 @@ class ApiTests(unittest.TestCase):
         body = response.get_json()
         self.assertEqual(body["summary"]["requests"], 10)
         self.assertEqual(body["summary"]["bot_requests"], 0)
-        self.assertEqual(body["comparison"]["samples"], 7)
+        self.assertEqual(body["comparison"]["samples"], 4)
         self.assertEqual(body["comparison"]["average"], 2)
         self.assertEqual(body["comparison"]["ratio"], 5)
+        self.assertEqual(body["comparison"]["quality"], "strong")
         self.assertEqual(body["pages"][0], {"path": "/spike", "requests": 8})
         self.assertEqual(body["referrers"], [{"host": "news.example", "requests": 8}])
+        self.assertEqual(body["contributors"]["pages"][0], {
+            "label": "/spike", "requests": 8, "baseline": 2, "change": 6,
+        })
+        self.assertEqual(body["contributors"]["referrers"][0]["change"], 8)
         self.assertEqual(sum(item["requests"] for item in body["timeline"]), 10)
         self.assertNotIn("/private", str(body))
+        with patch("webstats.api.datetime", wraps=datetime) as clock:
+            clock.now.return_value = now
+            chart = self.client.get(
+                "/api/site/example.com/timeseries?from=2026-09-28&to=2026-09-28&interval=hour"
+            ).get_json()
+            daily_chart = self.client.get(
+                "/api/site/example.com/timeseries?from=2026-09-28&to=2026-09-29&interval=day"
+            ).get_json()
+        self.assertEqual(chart["leads"], [{
+            "bucket": "2026-09-28T10:00:00-0500", "requests": 10,
+            "baseline": 2, "excess": 8, "samples": 4,
+        }])
+        self.assertEqual(daily_chart["leads"], [{
+            "bucket": "2026-09-28", "requests": 10,
+            "baseline": 2, "excess": 8, "samples": 4,
+        }])
 
     def test_investigation_validates_bucket_and_retention(self):
         self.authenticate()
@@ -457,6 +481,43 @@ class ApiTests(unittest.TestCase):
             ).get_json()
             self.assertEqual(daily["summary"]["requests"], 2)
             self.assertEqual(len(daily["timeline"]), 24)
+            self.assertEqual(daily["comparison"]["quality"], "insufficient")
+
+    def test_investigation_marks_sparse_comparison_and_respects_bot_filter(self):
+        with connect(self.config.storage.db_path) as conn:
+            conn.execute(
+                """INSERT INTO rollup_days(day, state, rolled_up_at, raw_requests)
+                   VALUES ('2026-09-21', 'open', 1, 0)"""
+            )
+            conn.commit()
+        self.authenticate()
+        now = datetime(2026, 9, 29, 12, tzinfo=ZoneInfo("America/Chicago"))
+        with patch("webstats.api.datetime", wraps=datetime) as clock:
+            clock.now.return_value = now
+            root = "/api/site/example.com/investigation?interval=day&bucket=2026-09-28"
+            human = self.client.get(root).get_json()
+            all_traffic = self.client.get(root + "&bots=1&assets=1").get_json()
+            series = self.client.get(
+                "/api/site/example.com/timeseries?from=2026-09-28&to=2026-09-28&interval=hour"
+            ).get_json()
+        self.assertEqual(human["summary"]["requests"], 2)
+        self.assertEqual(human["comparison"]["samples"], 1)
+        self.assertEqual(human["comparison"]["quality"], "limited")
+        self.assertEqual(human["comparison"]["uncertain_days"], ["2026-09-21"])
+        self.assertEqual(len(human["comparison"]["missing_days"]), 3)
+        self.assertEqual(all_traffic["summary"]["requests"], 4)
+        self.assertEqual(all_traffic["summary"]["bot_requests"], 1)
+        self.assertEqual(all_traffic["contributors"]["agents"][0]["label"], "Googlebot")
+        self.assertEqual(series["leads"], [])
+
+    def test_investigation_timeline_handles_fall_back_day(self):
+        self.authenticate()
+        with patch("webstats.api.datetime", wraps=datetime) as clock:
+            clock.now.return_value = datetime(2026, 11, 2, 12, tzinfo=ZoneInfo("America/Chicago"))
+            body = self.client.get(
+                "/api/site/example.com/investigation?interval=day&bucket=2026-11-01"
+            ).get_json()
+        self.assertEqual(len(body["timeline"]), 25)
 
     def test_old_hourly_range_falls_back_to_retained_daily_data(self):
         old_day = (

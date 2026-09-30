@@ -89,6 +89,10 @@ log paths, retention, timezone, and log format all live in TOML configuration.
 - Zero-filled daily charts, automatic hourly charts for retained one-day raw
   data, daily fallback for older dates, and bookmarkable date and traffic
   filters.
+- Traffic Detective case files for site-chart points, with page, referrer, and
+  bot-family changes against matching weekdays, coverage warnings, bookmarkable
+  case links, and automatic leads on well-supported spikes. Episodes and Inbox
+  can open the relevant day directly.
 - Local Chart.js 4.4.7 bundle with no CDN or front-end build step.
 - Bcrypt login, secure session cookies, login throttling, and public safe health
   status.
@@ -344,10 +348,14 @@ All routes require the admin session except `/api/health`:
 
 - `GET /api/sites`
 - `GET /api/overview?from=&to=&bots=0&assets=0`
-- `GET /api/site/<name>/timeseries?from=&to=&interval=day|hour`
+- `GET /api/site/<name>/timeseries?from=&to=&interval=day|hour` includes
+  `leads` for completed, sufficiently supported traffic spikes.
 - `GET /api/site/<name>/investigation?interval=day|hour&bucket=` opens a
-  Traffic Detective case file for a chart point. Detail requires retained raw
-  requests; expired periods return HTTP 410.
+  Traffic Detective case file for a chart point. It compares up to four prior
+  matching weekdays (and clock hours for hourly points), flags missing or quiet
+  comparison days, and ranks contributor changes. Detail requires retained raw
+  requests; expired periods return HTTP 410. Site page permalinks use
+  `case_interval` and `case_bucket` alongside the date and traffic filters.
 - `GET /api/site/<name>/pages`, `/referrers`, `/status`, `/agents`, `/countries`
 - `GET /api/site/<name>/page?path=/requested/path`
 - `GET /api/events?from=&to=&site=&limit=`, `/ai-crawlers`
