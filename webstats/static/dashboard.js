@@ -22,6 +22,7 @@
   let galaxyData = null;
   let errorsDays = [7, 30, 90].includes(Number(new URLSearchParams(window.location.search).get("days")))
     ? Number(new URLSearchParams(window.location.search).get("days")) : 30;
+  let investigationRequestId = 0;
 
   function setupNavigation() {
     const toggle = document.querySelector(".nav-toggle");
@@ -708,7 +709,74 @@
     body.innerHTML = rows.length ? rows.map(row => `<tr>${columns.map(column => `<td>${column.format ? column.format(row[column.key], row) : escapeHtml(String(row[column.key] ?? ""))}</td>`).join("")}</tr>`).join("") : `<tr><td class="empty" colspan="${columns.length}">${escapeHtml(empty)}</td></tr>`;
   }
 
+  function renderInvestigation(data) {
+    const content = document.querySelector("#investigation-content");
+    const heading = document.querySelector("#investigation-heading");
+    if (!content || !heading) return;
+    heading.textContent = data.interval === "hour"
+      ? new Date(data.timeline[0].start * 1000).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" })
+      : dateLabel(data.from, data.to);
+    const max = Math.max(1, ...data.timeline.map(item => item.requests));
+    const comparison = data.comparison.samples
+      ? `${fmt.format(data.summary.requests)} requests${data.in_progress ? " so far" : ""} · ${data.comparison.ratio === null ? "No prior requests recorded" : `${data.comparison.ratio}× prior average`} across ${data.comparison.samples} comparable ${data.interval}${data.comparison.samples === 1 ? "" : "s"}`
+      : `${fmt.format(data.summary.requests)} requests · No retained comparison periods`;
+    const pageHref = path => `/site/${encodeURIComponent(data.site)}/page?${new URLSearchParams({ from: data.from, to: data.to, ...filters(), path })}`;
+    const hourlyHref = `/site/${encodeURIComponent(data.site)}?${new URLSearchParams({ from: data.from, to: data.to, ...filters() })}`;
+    content.innerHTML = `
+      <p class="investigation-comparison">${escapeHtml(comparison)}${data.interval === "day" ? ` <a href="${escapeHtml(hourlyHref)}">View hourly chart</a>` : ""}</p>
+      <div class="investigation-metrics">
+        ${metric("Approx. visitors", fmt.format(data.summary.visitors))}
+        ${metric("Bot requests", fmt.format(data.summary.bot_requests))}
+        ${metric("4xx / 5xx", `${fmt.format(data.summary.client_errors)} / ${fmt.format(data.summary.server_errors)}`)}
+      </div>
+      <div class="investigation-grid">
+        <div><h3>What the logs show</h3><ul class="investigation-observations">${data.observations.length
+          ? data.observations.map(item => `<li>${escapeHtml(item)}</li>`).join("")
+          : "<li>No requests matched the current filters.</li>"}</ul></div>
+        <div><h3>Top pages</h3><ul class="investigation-list">${data.pages.length
+          ? data.pages.map(item => `<li><a href="${escapeHtml(pageHref(item.path))}">${escapeHtml(item.path)}</a><strong>${fmt.format(item.requests)}</strong></li>`).join("")
+          : "<li>No matching pages</li>"}</ul></div>
+        <div><h3>External referrers</h3><ul class="investigation-list">${data.referrers.length
+          ? data.referrers.map(item => `<li><span>${escapeHtml(item.host)}</span><strong>${fmt.format(item.requests)}</strong></li>`).join("")
+          : "<li>No external referrers recorded</li>"}</ul></div>
+        <div><h3>Bot families</h3><ul class="investigation-list">${data.agents.length
+          ? data.agents.map(item => `<li><span>${escapeHtml(item.agent)}</span><strong>${fmt.format(item.requests)}</strong></li>`).join("")
+          : "<li>No bot requests in this view</li>"}</ul></div>
+      </div>
+      <h3>Within the period</h3>
+      <div class="investigation-timeline" aria-label="Request counts through the selected period">${data.timeline.map(item => {
+        const label = new Date(item.start * 1000).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+        const height = Math.max(3, Math.round(100 * item.requests / max));
+        return `<div title="${escapeHtml(`${label}: ${item.requests} requests`)}"><span data-css-height="${height}"></span><small>${escapeHtml(label)}</small></div>`;
+      }).join("")}</div>
+      <p class="investigation-note">${escapeHtml(data.note)}</p>`;
+    applyDynamicStyles(content);
+  }
+
+  async function showInvestigation(site, bucket, interval) {
+    const panel = document.querySelector("#investigation-panel");
+    const content = document.querySelector("#investigation-content");
+    const heading = document.querySelector("#investigation-heading");
+    if (!panel || !content || !heading) return;
+    const requestId = ++investigationRequestId;
+    panel.classList.remove("hidden");
+    heading.textContent = "Opening case file…";
+    content.innerHTML = '<p class="empty">Reading the retained log data…</p>';
+    panel.scrollIntoView({ behavior: "smooth", block: "start" });
+    try {
+      const params = new URLSearchParams({ bucket, interval, ...filters() });
+      const data = await api(`/api/site/${encodeURIComponent(site)}/investigation?${params}`);
+      if (requestId === investigationRequestId) renderInvestigation(data);
+    } catch (error) {
+      if (requestId !== investigationRequestId || error?.name === "AbortError") return;
+      heading.textContent = "Case file unavailable";
+      content.innerHTML = `<p class="empty">${escapeHtml(error.message || String(error))}</p>`;
+    }
+  }
+
   async function loadSite() {
+    investigationRequestId += 1;
+    document.querySelector("#investigation-panel")?.classList.add("hidden");
     clearError();
     const site = document.body.dataset.site;
     try {
@@ -732,7 +800,12 @@
           { label: "Requests", data: series.series.map(row => row.requests), borderColor: colors[0], backgroundColor: `${colors[0]}22`, tension: .3, fill: true },
           { label: actualInterval === "hour" ? "Hourly visitors" : "Daily visitors", data: series.series.map(row => row.unique_visitors), borderColor: colors[1], backgroundColor: "transparent", tension: .3 },
         ] },
-        options: optionsWithMoments(actualInterval === "day" ? journal.events : []),
+        options: {
+          ...optionsWithMoments(actualInterval === "day" ? journal.events : []),
+          onClick: (_event, elements) => {
+            if (elements.length) showInvestigation(site, series.series[elements[0].index].bucket, actualInterval);
+          },
+        },
         plugins: [momentMarkerPlugin],
       });
       renderEvents(journal.events, "#site-event-journal");
@@ -1931,6 +2004,10 @@
   if (page === "overview") { setupFilters(loadOverview); loadOverview(); }
   if (page === "site") {
     setupFilters(loadSite);
+    document.querySelector("#investigation-close")?.addEventListener("click", () => {
+      investigationRequestId += 1;
+      document.querySelector("#investigation-panel")?.classList.add("hidden");
+    });
     document.querySelector("#pages-prev")?.addEventListener("click", () => { pagesOffset = Math.max(0, pagesOffset - 25); loadSite(); });
     document.querySelector("#pages-next")?.addEventListener("click", () => { pagesOffset += 25; loadSite(); });
     loadSite();

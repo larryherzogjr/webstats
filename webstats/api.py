@@ -3479,6 +3479,137 @@ def timeseries(name: str):
     return jsonify({"site": name, "interval": interval, "series": rows})
 
 
+@api_bp.get("/site/<path:name>/investigation")
+@login_required
+def investigation(name: str):
+    """Explain one chart bucket using retained requests for this site only."""
+    config = current_app.config["WEBSTATS_CONFIG"]
+    zone = ZoneInfo(config.server.timezone)
+    interval = request.args.get("interval", "")
+    bucket = request.args.get("bucket", "")
+    if interval not in {"day", "hour"}:
+        raise ApiError("interval must be day or hour")
+    try:
+        if interval == "day":
+            day = date.fromisoformat(bucket)
+            if day.isoformat() != bucket:
+                raise ValueError
+            start = datetime.combine(day, datetime.min.time(), tzinfo=zone)
+            end = datetime.combine(day + timedelta(days=1), datetime.min.time(), tzinfo=zone)
+        else:
+            start = datetime.strptime(bucket, "%Y-%m-%dT%H:%M:%S%z")
+            if start.strftime("%Y-%m-%dT%H:%M:%S%z") != bucket or start.minute or start.second:
+                raise ValueError
+            if start.astimezone(zone).utcoffset() != start.utcoffset():
+                raise ValueError
+            day = start.astimezone(zone).date()
+            end = start + timedelta(hours=1)
+    except (ValueError, OverflowError):
+        raise ApiError("Invalid chart bucket")
+    now = datetime.now(zone)
+    today = now.date()
+    cutoff = today - timedelta(days=config.storage.raw_retention_days)
+    if day < cutoff:
+        raise ApiError("Detailed requests for this date are no longer retained", 410)
+    if day > today:
+        raise ApiError("Chart bucket is in the future")
+
+    bots, assets = _flags()
+    start_ts, end_ts = int(start.timestamp()), int(end.timestamp())
+    if start_ts > int(now.timestamp()):
+        raise ApiError("Chart bucket is in the future")
+    in_progress = end_ts > int(now.timestamp())
+    where = "site_id=? AND ts>=? AND ts<? AND (?=1 OR is_bot=0) AND (?=1 OR is_asset=0)"
+    with _conn() as conn:
+        site = _site(conn, name)
+        args = (site["id"], start_ts, end_ts, bots, assets)
+        summary = dict(conn.execute(
+            f"""SELECT COUNT(*) requests, COUNT(DISTINCT ip_hash) visitors,
+                       COALESCE(SUM(bytes),0) bytes,
+                       COALESCE(SUM(is_bot),0) bot_requests,
+                       COALESCE(SUM(status BETWEEN 400 AND 499),0) client_errors,
+                       COALESCE(SUM(status BETWEEN 500 AND 599),0) server_errors
+                FROM requests WHERE {where}""", args,
+        ).fetchone())
+        pages = [dict(row) for row in conn.execute(
+            f"""SELECT path, COUNT(*) requests FROM requests WHERE {where}
+                GROUP BY path ORDER BY requests DESC, path LIMIT 5""", args,
+        )]
+        referrers = [dict(row) for row in conn.execute(
+            f"""SELECT referrer_host host, COUNT(*) requests FROM requests WHERE {where}
+                AND referrer_host IS NOT NULL GROUP BY referrer_host
+                ORDER BY requests DESC, host LIMIT 5""", args,
+        )]
+        agents = [dict(row) for row in conn.execute(
+            f"""SELECT ua_family agent, COUNT(*) requests FROM requests WHERE {where}
+                AND is_bot=1 GROUP BY ua_family ORDER BY requests DESC, agent LIMIT 5""", args,
+        )]
+        step = 300 if interval == "hour" else 3600
+        counts = {row["slice"]: row["requests"] for row in conn.execute(
+            f"""SELECT CAST((ts - ?) / ? AS INTEGER) slice, COUNT(*) requests
+                FROM requests WHERE {where} GROUP BY slice""",
+            (start_ts, step, *args),
+        )}
+        timeline = [
+            {"start": start_ts + index * step, "requests": counts.get(index, 0)}
+            for index in range((end_ts - start_ts + step - 1) // step)
+        ]
+        comparison_values = []
+        for offset in range(1, 8):
+            prior_day = day - timedelta(days=offset)
+            if prior_day < cutoff:
+                continue
+            if interval == "day":
+                prior_start = datetime.combine(prior_day, datetime.min.time(), tzinfo=zone)
+                prior_end = datetime.combine(prior_day + timedelta(days=1), datetime.min.time(), tzinfo=zone)
+            else:
+                prior_start = datetime.combine(prior_day, datetime.min.time(), tzinfo=zone).replace(
+                    hour=start.astimezone(zone).hour
+                )
+                prior_end = datetime.fromtimestamp(prior_start.timestamp() + 3600, zone)
+            comparison_values.append(conn.execute(
+                f"SELECT COUNT(*) FROM requests WHERE {where}",
+                (site["id"], int(prior_start.timestamp()), int(prior_end.timestamp()), bots, assets),
+            ).fetchone()[0])
+
+    average = round(sum(comparison_values) / len(comparison_values), 1) if comparison_values else None
+    ratio = round(summary["requests"] / average, 1) if average else None
+    observations = []
+    if average is not None:
+        ratio_text = f" ({ratio:g}×)" if ratio is not None else ""
+        observations.append(
+            f"{summary['requests']} requests{' so far' if in_progress else ''} versus "
+            f"{average:g} recorded on average across "
+            f"{len(comparison_values)} prior comparable {interval}{'s' if len(comparison_values) != 1 else ''}"
+            f"{ratio_text}."
+        )
+    if pages and summary["requests"]:
+        top = pages[0]
+        observations.append(
+            f"{top['path']} received {top['requests']} requests "
+            f"({round(100 * top['requests'] / summary['requests'])}% of this period)."
+        )
+    if referrers:
+        observations.append(
+            f"{referrers[0]['requests']} requests carried {referrers[0]['host']} "
+            "as an external referrer."
+        )
+    if summary["bot_requests"]:
+        observations.append(
+            f"{summary['bot_requests']} requests were classified as bots "
+            f"({round(100 * summary['bot_requests'] / summary['requests'])}% of this period)."
+        )
+    return jsonify({
+        "site": name, "interval": interval, "bucket": bucket, "in_progress": in_progress,
+        "from": day.isoformat(), "to": day.isoformat(),
+        "summary": summary,
+        "comparison": {"average": average, "ratio": ratio, "samples": len(comparison_values)},
+        "pages": pages, "referrers": referrers, "agents": agents,
+        "timeline": timeline, "observations": observations,
+        "note": "Comparisons use retained raw logs; missing logs can appear as zero traffic. Log patterns do not establish cause.",
+    })
+
+
 @api_bp.get("/site/<path:name>/pages")
 @login_required
 def pages(name: str):

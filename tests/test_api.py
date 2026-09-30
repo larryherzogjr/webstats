@@ -397,6 +397,67 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(sum(row["requests"] for row in hourly), 2)
         self.assertEqual(hourly[0]["bucket"], "2026-09-28T00:00:00-0500")
 
+    def test_investigation_explains_selected_hour_from_site_scoped_requests(self):
+        zone = ZoneInfo("America/Chicago")
+        with connect(self.config.storage.db_path) as conn:
+            site_id = site_id_map(conn)["example.com"]
+            other_id = conn.execute("INSERT INTO sites(name) VALUES ('other.example')").lastrowid
+            rows = []
+            for offset in range(8):
+                day = (datetime(2026, 9, 28, tzinfo=zone) - timedelta(days=offset)).date()
+                count = 8 if offset == 0 else 2
+                for index in range(count):
+                    ts = int(datetime(day.year, day.month, day.day, 10, 20, tzinfo=zone).timestamp())
+                    rows.append((
+                        f"detect-{offset}-{index}", f"detect-fp-{offset}-{index}", site_id,
+                        ts, day.isoformat(), f"visitor-{offset}-{index}", "GET", "/spike",
+                        None, 200, 42, "news.example" if offset == 0 else None,
+                        None, "Mozilla/5.0", "Other browser", "Other", 0, 0, None,
+                    ))
+            rows.append((
+                "other-detect", "other-detect-fp", other_id,
+                int(datetime(2026, 9, 28, 10, 20, tzinfo=zone).timestamp()),
+                "2026-09-28", "other-visitor", "GET", "/private", None, 200,
+                42, None, None, "Mozilla/5.0", "Other browser", "Other", 0, 0, None,
+            ))
+            insert_requests(conn, rows)
+            conn.commit()
+        self.authenticate()
+        now = datetime(2026, 9, 29, 12, tzinfo=zone)
+        with patch("webstats.api.datetime", wraps=datetime) as clock:
+            clock.now.return_value = now
+            response = self.client.get(
+                "/api/site/example.com/investigation?interval=hour"
+                "&bucket=2026-09-28T10:00:00-0500"
+            )
+        self.assertEqual(response.status_code, 200)
+        body = response.get_json()
+        self.assertEqual(body["summary"]["requests"], 10)
+        self.assertEqual(body["summary"]["bot_requests"], 0)
+        self.assertEqual(body["comparison"]["samples"], 7)
+        self.assertEqual(body["comparison"]["average"], 2)
+        self.assertEqual(body["comparison"]["ratio"], 5)
+        self.assertEqual(body["pages"][0], {"path": "/spike", "requests": 8})
+        self.assertEqual(body["referrers"], [{"host": "news.example", "requests": 8}])
+        self.assertEqual(sum(item["requests"] for item in body["timeline"]), 10)
+        self.assertNotIn("/private", str(body))
+
+    def test_investigation_validates_bucket_and_retention(self):
+        self.authenticate()
+        root = "/api/site/example.com/investigation?interval=hour&bucket="
+        with patch("webstats.api.datetime", wraps=datetime) as clock:
+            clock.now.return_value = datetime(2026, 9, 29, 12, tzinfo=ZoneInfo("America/Chicago"))
+            self.assertEqual(self.client.get(root + "2026-09-28T10:00:00-0500").status_code, 200)
+            self.assertEqual(self.client.get(root + "not-a-time").status_code, 400)
+            self.assertEqual(self.client.get(root + "2026-09-28T10:30:00-0500").status_code, 400)
+            self.assertEqual(self.client.get(root + "2026-09-28T10:00:00-0600").status_code, 400)
+            self.assertEqual(self.client.get(root.replace("interval=hour", "interval=day") + "2020-01-01").status_code, 410)
+            daily = self.client.get(
+                root.replace("interval=hour", "interval=day") + "2026-09-28"
+            ).get_json()
+            self.assertEqual(daily["summary"]["requests"], 2)
+            self.assertEqual(len(daily["timeline"]), 24)
+
     def test_old_hourly_range_falls_back_to_retained_daily_data(self):
         old_day = (
             datetime.now(ZoneInfo(self.config.server.timezone)).date()

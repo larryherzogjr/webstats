@@ -345,6 +345,9 @@ All routes require the admin session except `/api/health`:
 - `GET /api/sites`
 - `GET /api/overview?from=&to=&bots=0&assets=0`
 - `GET /api/site/<name>/timeseries?from=&to=&interval=day|hour`
+- `GET /api/site/<name>/investigation?interval=day|hour&bucket=` opens a
+  Traffic Detective case file for a chart point. Detail requires retained raw
+  requests; expired periods return HTTP 410.
 - `GET /api/site/<name>/pages`, `/referrers`, `/status`, `/agents`, `/countries`
 - `GET /api/site/<name>/page?path=/requested/path`
 - `GET /api/events?from=&to=&site=&limit=`, `/ai-crawlers`
